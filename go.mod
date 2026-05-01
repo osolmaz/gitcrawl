@@ -9,6 +9,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/mattn/go-isatty v0.0.22
 	github.com/pelletier/go-toml/v2 v2.3.1
+	github.com/vincentkoc/crawlkit v0.3.16
 	modernc.org/sqlite v1.50.0
 )
 
@@ -39,5 +40,3 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
-
-replace github.com/vincentkoc/crawlkit => /Users/vincentkoc/GIT/_Perso/crawlkit
