@@ -15,6 +15,8 @@
 - Auto-hydrate one exact pull request when local PR detail reads miss or check/run data is stale, using `gh auth token` if `GITHUB_TOKEN` is absent, then retry from SQLite before falling back to live `gh`.
 - Cache more ghx-style read-only fallthroughs, including release, workflow, secret, variable, project, ruleset, gist, org, and search reads; cache repeat read failures by default; and clear the fallthrough cache after the corresponding mutating `gh` commands.
 - Promote portable backups to the v2 format: keep compact comments, PR files, commits, checks, and workflow runs while stripping raw JSON, generated documents, vectors, clusters, and run history.
+- Route config path handling and SQLite openers through `crawlkit` so GitHub archive tooling shares the same foundation as the Slack, Discord, and Notion crawlers.
+- Keep the existing `gitcrawl tui` as the family reference terminal interface and add CI smoke coverage for its help surface.
 
 ## 0.1.2 - 2026-05-01
 
