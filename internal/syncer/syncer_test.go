@@ -1,9 +1,12 @@
 package syncer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -286,7 +289,13 @@ func TestSyncPersistsIssuesAndPullRequests(t *testing.T) {
 
 	s := New(fakeGitHub{}, st)
 	s.now = func() time.Time { return time.Date(2026, 4, 26, 0, 0, 0, 0, time.UTC) }
-	stats, err := s.Sync(ctx, Options{Owner: "openclaw", Repo: "gitcrawl", IncludeComments: true})
+	var progressLogs bytes.Buffer
+	stats, err := s.Sync(ctx, Options{
+		Owner:           "openclaw",
+		Repo:            "gitcrawl",
+		IncludeComments: true,
+		Logger:          testProgressLogger(&progressLogs),
+	})
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -320,6 +329,18 @@ func TestSyncPersistsIssuesAndPullRequests(t *testing.T) {
 	}
 	if documentCount != 1 {
 		t.Fatalf("document count: got %d want 1", documentCount)
+	}
+	for _, want := range []string{
+		`msg="sync progress"`,
+		`state=finished`,
+		`unit=threads`,
+		`percent=100.0`,
+		`completion=100.0%`,
+		`repository=openclaw/gitcrawl`,
+	} {
+		if !strings.Contains(progressLogs.String(), want) {
+			t.Fatalf("missing %q in progress logs:\n%s", want, progressLogs.String())
+		}
 	}
 }
 
@@ -680,4 +701,15 @@ func TestMappingFallbackBranches(t *testing.T) {
 	if thread.GitHubID != "123" || thread.Number != 456 || thread.AuthorLogin != "" || thread.ClosedAtGitHub == "" {
 		t.Fatalf("thread = %+v", thread)
 	}
+}
+
+func testProgressLogger(out *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(out, &slog.HandlerOptions{
+		ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
+			if attr.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return attr
+		},
+	}))
 }
