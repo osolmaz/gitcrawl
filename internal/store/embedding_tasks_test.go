@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -85,6 +86,19 @@ func TestEmbeddingTextForBasisCapsLongInputs(t *testing.T) {
 	}
 	if !strings.HasPrefix(text, "oversized issue\n\n") {
 		t.Fatalf("truncated text lost title prefix: %q", text[:40])
+	}
+}
+
+func TestEmbeddingContentHashVersionTracksCurrentRuneCap(t *testing.T) {
+	if embeddingContentHash("title_original", "test", "body") == "" {
+		t.Fatal("embedding content hash should be non-empty")
+	}
+	material := embeddingContentHashMaterial("title_original", "test", "body")
+	if want := fmt.Sprintf("max_runes=%d", MaxEmbeddingTextRunes); !strings.Contains(material, want) {
+		t.Fatalf("embedding hash material should include %s", want)
+	}
+	if strings.Contains(material, "max_runes=24000") {
+		t.Fatal("embedding hash material still carries stale 24000 rune cap")
 	}
 }
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3 - Unreleased
+
+- Force embedding refreshes when the embedding input rune cap changes, so stale larger-cap vectors are not reused.
+
 ## 0.1.1 - 2026-04-30
 
 - Fix portable store refreshes when local Git pull configuration tries to rebase onto multiple branch merge refs.
