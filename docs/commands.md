@@ -101,7 +101,7 @@ These work on every command.
 | `gitcrawl gh label list ...` | Falls through; cached briefly | [gh shim](/gh-shim/) |
 | `gitcrawl gh api <GET path>` | Falls through; cached briefly (GET-only REST) | [gh shim](/gh-shim/) |
 | `gitcrawl gh api graphql -f query=...` | Falls through; read-only queries are cached | [gh shim](/gh-shim/#read-only-fallthroughs-cached) |
-| `gitcrawl gh xcache stats\|keys\|gc\|flush [--json]` | Cache inspection / housekeeping | [gh shim](/gh-shim/#cache-inspection-xcache) |
+| `gitcrawl gh xcache stats\|keys\|gc\|flush\|reset [--json]` | Cache inspection / housekeeping | [gh shim](/gh-shim/#cache-inspection-xcache) |
 | _Anything else_ | Falls through to real `gh` | [gh shim](/gh-shim/) |
 
 The shim binary can be installed standalone by symlinking the `gitcrawl` binary as `gh` or `gitcrawl-gh`.

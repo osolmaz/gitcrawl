@@ -101,20 +101,20 @@ These commands always run real `gh` but the response body is cached for the next
 
 Common Actions REST reads such as run status, job lists, and logs get Actions-aware TTLs.
 
-Default cache TTLs are command-aware: `gh run list` and run-status reads use `2m`; workflow, job detail, and Actions job-list reads use `5m`; search reads use `15m`; release metadata uses `30m`; GitHub user profile reads use `7d`; read-only GraphQL queries use `6h`; completed-style run/job log reads use `12h`; `gh pr diff` uses `5m` without a stable SHA and `7d` with one. Most other read-only fallthroughs use `5m` to `10m`. Override with `GITCRAWL_GH_CACHE_TTL=5m` or similar.
+Default cache TTLs are command-aware: active `gh run list` and run-status reads use `2m`; completed run views are kept for `12h`; completed run lists are kept for `30m`; workflow, job detail, and Actions job-list reads use `5m`; search reads use `15m`; release metadata uses `30m`; GitHub user profile reads use `7d`; read-only GraphQL queries use `6h`; completed-style run/job log reads use `12h`; `gh pr diff` uses `5m` without a stable SHA and `7d` with one. Most other read-only fallthroughs use `5m` to `10m`. Override with `GITCRAWL_GH_CACHE_TTL=5m` or similar.
 
-Repeat read failures are cached by default too. That avoids a fleet of agents all rediscovering the same missing release, workflow, secret, or unsupported field. Error entries are capped to shorter lifetimes, and rate-limit errors are capped at `2m` so a reset is not masked all day. Set `GITCRAWL_GH_CACHE_ERRORS=0` to cache successful reads only.
+Repeat read failures are cached by default too. That avoids a fleet of agents all rediscovering the same missing release, workflow, secret, or unsupported field. Error entries are capped to shorter lifetimes, and rate-limit errors are capped at `2m` so a reset is not masked all day. If GitHub returns a rate-limit error while refreshing an expired successful entry, the shim serves that stale success with a warning instead of failing the read. Set `GITCRAWL_GH_CACHE_ERRORS=0` to cache successful reads only.
 
 ## Auto-hydration
 
-When a local PR-detail read misses the cache, the shim can auto-hydrate exactly one PR before falling back:
+When a local issue or PR read misses the cache, the shim can auto-hydrate exactly one thread before falling back:
 
-1. Shim detects missing or stale PR detail (older than 90s, or head SHA mismatch)
-2. If `GITCRAWL_GH_AUTO_HYDRATE != 0` (the default), runs `gitcrawl sync --numbers <n> --with pr-details`
+1. Shim detects a missing issue/PR row or stale PR detail (older than 90s, or head SHA mismatch)
+2. If `GITCRAWL_GH_AUTO_HYDRATE != 0` (the default), runs `gitcrawl sync --numbers <n>` and adds `--with pr-details` for PR detail reads
 3. Retries the local query against the freshly populated cache
 4. Falls through to the real `gh` if hydration failed
 
-This keeps `gh pr view`, `gh pr checks`, and `gh run` reads cheap and fresh without manual sync orchestration. Disable with `GITCRAWL_GH_AUTO_HYDRATE=0` if you want the shim to be strictly cache-or-fallthrough.
+This keeps `gh issue view`, `gh pr view`, `gh pr checks`, and `gh run` reads cheap and fresh without manual sync orchestration. Disable with `GITCRAWL_GH_AUTO_HYDRATE=0` if you want the shim to be strictly cache-or-fallthrough.
 
 ## Cache inspection: `xcache`
 
@@ -123,6 +123,7 @@ gitcrawl gh xcache stats        # summary
 gitcrawl gh xcache keys         # per-entry detail
 gitcrawl gh xcache gc           # remove expired entries + stale lock files
 gitcrawl gh xcache flush        # clear everything
+gitcrawl gh xcache reset        # reset counters without deleting entries
 ```
 
 All accept `--json` for scripting.
@@ -136,9 +137,13 @@ All accept `--json` for scripting.
   "expired": 6,
   "locks": 0,
   "bytes": 1841234,
+  "cache_hits": 629,
+  "total_reads": 641,
+  "hit_rate_percent": 98.1,
   "counters": {
     "local_hits": 540,
     "fallback_hits": 88,
+    "stale_hits": 1,
     "backend_misses": 12,
     "pass_through_writes": 4,
     "backend_misses_by_command": {
@@ -156,26 +161,26 @@ All accept `--json` for scripting.
 }
 ```
 
-`local_hits` are answered from SQLite; `fallback_hits` are answered from the fallthrough cache; `backend_misses` actually hit GitHub. The per-command and per-route miss maps show which shapes still escape the cache, which is usually the fastest way to find the next optimization.
+`local_hits` are answered from SQLite; `fallback_hits` are answered from the fallthrough cache; `stale_hits` are expired successful cache entries served after a backend rate-limit response; `backend_misses` actually hit GitHub. The per-command and per-route miss maps show which shapes still escape the cache, which is usually the fastest way to find the next optimization.
 
 ## Cache key composition
 
 Cache keys are deterministic SHA-256 hashes of:
 
-- A version tag (`v3`)
+- A version tag (`v4`)
 - The resolved gitcrawl config path
 - The current working directory when the command depends on implicit repo resolution
 - The `GH_HOST` env var
 - The `GH_REPO` env var when the command relies on it for implicit repo resolution
 - An explicit-scope marker for commands that include their own API path or repository
 - For `gh pr diff`: the stable identity `pr-diff:owner/repo:number:head-sha` (when available)
-- The full command argument vector, null-separated
+- A canonicalized command argument vector, null-separated. Common equivalent forms such as `-R` vs. `--repo`, flag ordering, and `--json a,b` vs. `--json b,a` share the same cache key.
 
 This isolates implicit repo reads in sibling checkouts while still coalescing explicit reads such as `gh api users/octocat`, `gh api repos/openclaw/openclaw/...`, and `gh repo view openclaw/gitcrawl` across those checkouts. Explicit reads ignore unrelated `GH_REPO` values so agents with different ambient repo settings still share cache entries when the command itself names the target. Concurrent cache misses use a lock file so one process populates the entry while peers wait for the result, instead of all of them firing at GitHub.
 
 ## What does not flow through the shim
 
-- **Mutating commands** — `gh issue close`, `gh pr merge`, `gh pr comment`, `gh api -X POST`, etc. These pass straight through, increment `pass_through_writes`, and clear the relevant cache entries on success.
+- **Mutating commands** — `gh issue close`, `gh pr merge`, `gh pr comment`, `gh api -X POST`, etc. These pass straight through, increment `pass_through_writes`, and invalidate matching cache tags on success. Unknown mutation scope falls back to clearing all entries.
 - **Auth flows** — `gh auth login`, `gh auth refresh`, etc. Always real `gh`.
 - **Anything the shim does not recognize** — falls through unmodified.
 

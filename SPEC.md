@@ -113,17 +113,18 @@ gitcrawl gh issue list -R owner/repo --state open --search "hot loop" --json num
 gitcrawl gh pr list -R owner/repo --state open --search "manifest cache" --json number,title,url
 ```
 
-Unsupported commands fall through to the real GitHub CLI. Read-only fallthroughs use a command-aware persistent cache in `cache/gh-shim` for repeated agent calls (`run list/view`, `pr diff/checks/list/status/view`, `issue list/status/view`, `repo view/list`, `release list/view`, `workflow list/view`, `secret list`, `variable get/list`, `project` list/view reads, `ruleset` reads, `gist` reads, `org list`, `label list`, read-only `search` kinds, and GET-only `api`). Actions run/job logs are cached much longer than CI status reads, and `xcache stats` records backend misses by command and normalized route so remaining GitHub-heavy patterns are visible. Repeat read failures are cached by default so many agents do not rediscover the same missing release, workflow, or field, with short caps for error entries and rate-limit responses; set `GITCRAWL_GH_CACHE_ERRORS=0` to disable that behavior. Mutating commands are never cached and clear the fallthrough cache on success. The shim does not add GitHub write-back behavior of its own; writes remain delegated to `gh`.
+Unsupported commands fall through to the real GitHub CLI. Read-only fallthroughs use a command-aware persistent cache in `cache/gh-shim` for repeated agent calls (`run list/view`, `pr diff/checks/list/status/view`, `issue list/status/view`, `repo view/list`, `release list/view`, `workflow list/view`, `secret list`, `variable get/list`, `project` list/view reads, `ruleset` reads, `gist` reads, `org list`, `label list`, read-only `search` kinds, and GET-only `api`). Actions run/job logs are cached much longer than CI status reads, completed run reads receive longer TTLs, and `xcache stats` records hit rate plus backend misses by command and normalized route so remaining GitHub-heavy patterns are visible. Repeat read failures are cached by default so many agents do not rediscover the same missing release, workflow, or field, with short caps for error entries and rate-limit responses; if GitHub rate-limits a refresh and a stale successful entry exists, the stale entry is served with a warning. Set `GITCRAWL_GH_CACHE_ERRORS=0` to disable error caching. Mutating commands are never cached and invalidate matching cache-tag entries on success. Unknown mutation scope falls back to clearing the fallthrough cache. The shim does not add GitHub write-back behavior of its own; writes remain delegated to `gh`.
 
 Cache inspection commands:
 
 ```text
 gitcrawl gh xcache stats
 gitcrawl gh xcache keys
+gitcrawl gh xcache reset
 gitcrawl gh xcache flush
 ```
 
-The cache key includes the resolved gitcrawl config path, current working directory, `GH_HOST`, `GH_REPO`, and exact `gh` arguments. This keeps sibling checkouts and portable stores isolated while still coalescing repeated calls from the same agent workspace. Concurrent cache misses use a lock file so one process populates the entry while peers wait for the result.
+The cache key includes the resolved gitcrawl config path, current working directory, `GH_HOST`, `GH_REPO`, stable PR-diff identity when available, and canonicalized `gh` arguments. This keeps sibling checkouts and portable stores isolated while still coalescing equivalent agent calls such as reordered flags or sorted `--json` fields. Concurrent cache misses use a lock file so one process populates the entry while peers wait for the result.
 
 ## Config
 
