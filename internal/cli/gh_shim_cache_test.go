@@ -121,6 +121,110 @@ echo "call-$count:$*"
 	}
 }
 
+func TestGHXCacheCommandsReportAndCleanCacheState(t *testing.T) {
+	ctx := context.Background()
+	configPath := seedGHShimRepo(t, ctx)
+	app := New()
+	app.configPath = configPath
+	var stdout bytes.Buffer
+	app.Stdout = &stdout
+	dir, err := app.ghCommandCacheDir()
+	if err != nil {
+		t.Fatalf("cache dir: %v", err)
+	}
+	now := time.Now()
+	freshPath := filepath.Join(dir, "fresh.json")
+	expiredPath := filepath.Join(dir, "expired.json")
+	if err := writeGHCommandCache(freshPath, ghCommandCacheEntry{CreatedAt: now.Add(-time.Minute), Args: []string{"api", "users/octocat"}, ExitCode: 0, Stdout: "{}"}); err != nil {
+		t.Fatalf("write fresh cache: %v", err)
+	}
+	if err := writeGHCommandCache(expiredPath, ghCommandCacheEntry{CreatedAt: now.Add(-8 * 24 * time.Hour), Args: []string{"api", "users/octocat"}, ExitCode: 0, Stdout: "{}"}); err != nil {
+		t.Fatalf("write expired cache: %v", err)
+	}
+	lockPath := filepath.Join(dir, "stale.lock")
+	if err := os.WriteFile(lockPath, []byte("123\n"), 0o600); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	old := now.Add(-3 * time.Minute)
+	if err := os.Chtimes(lockPath, old, old); err != nil {
+		t.Fatalf("age lock: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "broken.json"), []byte("{"), 0o600); err != nil {
+		t.Fatalf("write broken entry: %v", err)
+	}
+	if _, ok := ghCommandCacheKeyInfoFromDirEntry(dir, mustDirEntry(t, dir, "broken.json")); ok {
+		t.Fatal("broken cache entry should be ignored")
+	}
+	if err := app.incrementGHXCacheCounter("local_hits"); err != nil {
+		t.Fatalf("increment hit: %v", err)
+	}
+	if err := app.incrementGHXCacheBackendMiss([]string{"api", "repos/openclaw/gitcrawl/actions/runs/1/jobs"}); err != nil {
+		t.Fatalf("increment miss: %v", err)
+	}
+	if err := app.runGHXCache([]string{"stats", "--since", "2h"}); err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	statsText := stdout.String()
+	if !strings.Contains(statsText, "hit rate") || !strings.Contains(statsText, "Backend Misses by Route") {
+		t.Fatalf("stats output = %q", statsText)
+	}
+	stdout.Reset()
+	if err := app.runGHXCache([]string{"keys"}); err != nil {
+		t.Fatalf("keys: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "api users/octocat") {
+		t.Fatalf("keys output = %q", stdout.String())
+	}
+	stdout.Reset()
+	if err := app.runGHXCache([]string{"snapshot", "--reset"}); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Reset xcache counters") {
+		t.Fatalf("snapshot output = %q", stdout.String())
+	}
+	stdout.Reset()
+	if err := app.runGHXCache([]string{"gc"}); err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Removed 1 expired entrie(s), 1 stale lock(s)") {
+		t.Fatalf("gc output = %q", stdout.String())
+	}
+	stdout.Reset()
+	if err := app.runGHXCache([]string{"flush"}); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Flushed") {
+		t.Fatalf("flush output = %q", stdout.String())
+	}
+	if err := app.clearGHCommandCache(); err != nil {
+		t.Fatalf("clear cache: %v", err)
+	}
+	if err := app.runGHXCache([]string{}); err == nil {
+		t.Fatal("missing xcache command should fail")
+	}
+	if err := app.runGHXCache([]string{"stats", "--since", "nope"}); err == nil {
+		t.Fatal("invalid since should fail")
+	}
+	if err := app.runGHXCache([]string{"mystery"}); err == nil {
+		t.Fatal("unknown xcache command should fail")
+	}
+}
+
+func mustDirEntry(t *testing.T, dir, name string) os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == name {
+			return entry
+		}
+	}
+	t.Fatalf("missing dir entry %s", name)
+	return nil
+}
+
 func TestGHShimCachesGHXStyleReadOnlyFallbackCommands(t *testing.T) {
 	for _, args := range [][]string{
 		{"gh", "release", "view", "v1.2.3", "-R", "openclaw/openclaw"},

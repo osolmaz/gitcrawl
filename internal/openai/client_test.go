@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,12 @@ import (
 	"time"
 	"unicode/utf8"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestEmbedAcceptsLargeBatchResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -355,5 +362,81 @@ func TestEmbedRetryAfterDateForm(t *testing.T) {
 	}
 	if len(slept) != 1 || slept[0] < time.Second || slept[0] > 4*time.Second {
 		t.Fatalf("expected ~3s sleep from HTTP-date Retry-After, got %v", slept)
+	}
+}
+
+func TestOpenAIErrorAndRetryHelpers(t *testing.T) {
+	apiErr := &APIError{Status: http.StatusBadGateway, Type: "overloaded_error", Code: "overloaded", Message: "try later"}
+	if got := apiErr.Error(); !strings.Contains(got, "status=502") || !strings.Contains(got, "message=try later") {
+		t.Fatalf("error string = %q", got)
+	}
+	if !apiErr.Retryable() || !apiErr.IsOverloaded() {
+		t.Fatalf("retryable/overloaded = %v/%v", apiErr.Retryable(), apiErr.IsOverloaded())
+	}
+	if (*APIError)(nil).Retryable() || !(&APIError{Status: http.StatusGatewayTimeout}).Retryable() || (&APIError{Status: http.StatusTooManyRequests, Type: "insufficient_quota"}).Retryable() {
+		t.Fatal("unexpected retryable classification")
+	}
+	if AsAPIError(nil) != nil || AsAPIError(errors.New("plain")) != nil {
+		t.Fatal("unexpected APIError extraction")
+	}
+	now := time.Date(2026, 5, 5, 10, 0, 0, 0, time.UTC)
+	if got := parseRetryAfter("1.5", now); got != 1500*time.Millisecond {
+		t.Fatalf("float retry-after = %s", got)
+	}
+	if got := parseRetryAfter("-1", now); got != 0 {
+		t.Fatalf("negative retry-after = %s", got)
+	}
+	if got := parseRetryAfter(now.Add(-time.Minute).Format(http.TimeFormat), now); got != 0 {
+		t.Fatalf("past retry-after = %s", got)
+	}
+	retry := RetryConfig{MaxAttempts: -1, BaseDelay: 0, MaxDelay: 50 * time.Millisecond, MaxElapsed: 0, Jitter: 0}
+	client := New(Options{APIKey: "test", Retry: &retry})
+	if client.retry.MaxAttempts != 1 {
+		t.Fatalf("max attempts = %d, want normalized 1", client.retry.MaxAttempts)
+	}
+	if got := client.backoff(10, 0, time.Second); got != 50*time.Millisecond {
+		t.Fatalf("retry-after should be clamped to max delay, got %s", got)
+	}
+	if got := client.backoff(10, 0, 0); got != 50*time.Millisecond {
+		t.Fatalf("exponential backoff should be clamped to max delay, got %s", got)
+	}
+	if !client.canSleep(now, 24*time.Hour) {
+		t.Fatal("max elapsed <= 0 should allow sleeping")
+	}
+	if err := sleepCtx(context.Background(), 0); err != nil {
+		t.Fatalf("zero sleep: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := sleepCtx(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled sleep err = %v", err)
+	}
+}
+
+func TestEmbedRetriesTransportError(t *testing.T) {
+	var calls int
+	client := New(Options{
+		APIKey:  "test",
+		BaseURL: "https://example.invalid",
+		Retry:   &RetryConfig{MaxAttempts: 2, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond, MaxElapsed: time.Hour, Jitter: 0},
+		Sleep:   func(context.Context, time.Duration) error { return nil },
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if calls == 1 {
+				return nil, errors.New("temporary network break")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"data":[{"index":0,"embedding":[0.5]}]}`)),
+			}, nil
+		})},
+	})
+	vectors, err := client.Embed(context.Background(), "model", []string{"hi"})
+	if err != nil {
+		t.Fatalf("embed: %v", err)
+	}
+	if calls != 2 || len(vectors) != 1 || vectors[0][0] != 0.5 {
+		t.Fatalf("calls=%d vectors=%v", calls, vectors)
 	}
 }

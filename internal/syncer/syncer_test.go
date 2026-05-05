@@ -644,3 +644,40 @@ func TestMappingHelperBranches(t *testing.T) {
 		t.Fatalf("comment = %+v", comment)
 	}
 }
+
+func TestMappingFallbackBranches(t *testing.T) {
+	now := time.Date(2026, 5, 5, 12, 0, 0, 123, time.UTC)
+	normalized, err := normalizeSince("2026-05-05T12:00:00+02:00", now)
+	if err != nil {
+		t.Fatalf("normalize iso since: %v", err)
+	}
+	if normalized != "2026-05-05T10:00:00Z" {
+		t.Fatalf("normalized iso since = %q", normalized)
+	}
+	if got, err := normalizeSince("2w", now); err != nil || got != "2026-04-21T12:00:00.000000123Z" {
+		t.Fatalf("normalize weeks = %q, %v", got, err)
+	}
+	if got := mustJSON(map[string]any{"bad": make(chan int)}); got != "{}" {
+		t.Fatalf("mustJSON marshal fallback = %q", got)
+	}
+
+	thread := mapIssueToThread(99, map[string]any{
+		"id":         int64(123),
+		"number":     456,
+		"state":      "closed",
+		"title":      "fallbacks",
+		"body":       "body",
+		"html_url":   "https://github.com/openclaw/gitcrawl/issues/456",
+		"labels":     nil,
+		"assignees":  nil,
+		"created_at": "2026-05-05T10:00:00Z",
+		"updated_at": "2026-05-05T11:00:00Z",
+		"closed_at":  "2026-05-05T12:00:00Z",
+	}, "2026-05-05T12:00:00Z")
+	if thread.LabelsJSON != "[]" || thread.AssigneesJSON != "[]" {
+		t.Fatalf("nullable label defaults: labels=%s assignees=%s", thread.LabelsJSON, thread.AssigneesJSON)
+	}
+	if thread.GitHubID != "123" || thread.Number != 456 || thread.AuthorLogin != "" || thread.ClosedAtGitHub == "" {
+		t.Fatalf("thread = %+v", thread)
+	}
+}

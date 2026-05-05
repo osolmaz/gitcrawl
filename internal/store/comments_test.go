@@ -36,4 +36,18 @@ func TestUpsertComment(t *testing.T) {
 	if id == 0 {
 		t.Fatal("expected comment id")
 	}
+	if _, err := st.UpsertComment(ctx, Comment{
+		ThreadID: threadID, GitHubID: "c0", CommentType: "issue_comment",
+		AuthorLogin: "octobot", AuthorType: "Bot", Body: "earlier bot note", IsBot: true, RawJSON: "{}",
+		CreatedAtGitHub: "2026-04-25T00:00:00Z", UpdatedAtGitHub: "2026-04-25T00:01:00Z",
+	}); err != nil {
+		t.Fatalf("second comment: %v", err)
+	}
+	comments, err := st.ListComments(ctx, threadID)
+	if err != nil {
+		t.Fatalf("list comments: %v", err)
+	}
+	if len(comments) != 2 || comments[0].GitHubID != "c0" || !comments[0].IsBot || comments[1].GitHubID != "c1" {
+		t.Fatalf("comments = %+v", comments)
+	}
 }

@@ -254,6 +254,70 @@ func TestPortablePruneCanonicalizesSchemaAndMetadata(t *testing.T) {
 	}
 }
 
+func TestPortablePruneClearsPRRawJSONBlobPointersAndFingerprints(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	repoID, threadIDs := seedVectorThreads(t, ctx, st)
+	threadID := threadIDs[1]
+	if _, err := st.DB().ExecContext(ctx, `
+		insert into blobs(id, sha256, media_type, compression, size_bytes, storage_kind, inline_text, created_at)
+		values(1, 'sha', 'application/json', 'none', 2, 'inline', '{}', '2026-05-05T00:00:00Z');
+		insert into thread_revisions(id, thread_id, source_updated_at, content_hash, title_hash, body_hash, labels_hash, raw_json_blob_id, created_at)
+		values(1, ?, '2026-05-05T00:00:00Z', 'content', 'title', 'body', 'labels', 1, '2026-05-05T00:00:00Z');
+		insert into thread_fingerprints(thread_revision_id, algorithm_version, fingerprint_hash, fingerprint_slug, title_tokens_json, body_token_hash, linked_refs_json, file_set_hash, module_buckets_json, simhash64, feature_json, created_at)
+		values(1, 'v1', 'hash', 'slug', '["token"]', 'body', '["#1"]', 'files', '["module"]', '1', '{"x":1}', '2026-05-05T00:00:00Z');
+	`, threadID); err != nil {
+		t.Fatalf("seed revision/fingerprint: %v", err)
+	}
+	if _, err := st.UpsertComment(ctx, Comment{ThreadID: threadID, GitHubID: "raw-comment", CommentType: "issue_comment", Body: "comment body that is long", RawJSON: `{"raw":true}`, CreatedAtGitHub: "2026-05-05T00:00:00Z"}); err != nil {
+		t.Fatalf("seed comment: %v", err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `update comments set raw_json_blob_id = 1 where github_id = 'raw-comment'`); err != nil {
+		t.Fatalf("link comment blob: %v", err)
+	}
+	if err := st.UpsertPullRequestCache(ctx,
+		PullRequestDetail{ThreadID: threadID, RepoID: repoID, Number: 302, HeadSHA: "head", RawJSON: `{"detail":true}`, FetchedAt: "2026-05-05T00:00:00Z", UpdatedAt: "2026-05-05T00:00:00Z"},
+		[]PullRequestFile{{Path: "a.go", RawJSON: `{"file":true}`, FetchedAt: "2026-05-05T00:00:00Z"}},
+		[]PullRequestCommit{{SHA: "abc", RawJSON: `{"commit":true}`, FetchedAt: "2026-05-05T00:00:00Z"}},
+		[]PullRequestCheck{{Name: "ci", RawJSON: `{"check":true}`, FetchedAt: "2026-05-05T00:00:00Z"}},
+		[]WorkflowRun{{RepoID: repoID, RunID: "1", RawJSON: `{"run":true}`, FetchedAt: "2026-05-05T00:00:00Z"}},
+	); err != nil {
+		t.Fatalf("seed pr cache: %v", err)
+	}
+	stats, err := st.PrunePortablePayloads(ctx, PortablePruneOptions{BodyChars: 4})
+	if err != nil {
+		t.Fatalf("prune portable: %v", err)
+	}
+	if stats.RawJSONPruned < 6 || stats.FingerprintsPruned != 1 || stats.CommentsPruned != 1 {
+		t.Fatalf("portable stats = %+v", stats)
+	}
+	var commentRaw string
+	var commentBlob, revisionBlob any
+	if err := st.DB().QueryRowContext(ctx, `select raw_json, raw_json_blob_id from comments where github_id = 'raw-comment'`).Scan(&commentRaw, &commentBlob); err != nil {
+		t.Fatalf("read pruned comment: %v", err)
+	}
+	if commentRaw != "" || commentBlob != nil {
+		t.Fatalf("comment raw=%q blob=%v", commentRaw, commentBlob)
+	}
+	if err := st.DB().QueryRowContext(ctx, `select raw_json_blob_id from thread_revisions where id = 1`).Scan(&revisionBlob); err != nil {
+		t.Fatalf("read pruned revision: %v", err)
+	}
+	if revisionBlob != nil {
+		t.Fatalf("revision blob=%v", revisionBlob)
+	}
+	var titleTokens, linkedRefs, modules, features string
+	if err := st.DB().QueryRowContext(ctx, `select title_tokens_json, linked_refs_json, module_buckets_json, feature_json from thread_fingerprints where id = 1`).Scan(&titleTokens, &linkedRefs, &modules, &features); err != nil {
+		t.Fatalf("read pruned fingerprint: %v", err)
+	}
+	if titleTokens != "[]" || linkedRefs != "[]" || modules != "[]" || features != "{}" {
+		t.Fatalf("fingerprint title=%q refs=%q modules=%q features=%q", titleTokens, linkedRefs, modules, features)
+	}
+}
+
 func TestClusterHelperBranches(t *testing.T) {
 	summaries := []ClusterSummary{
 		{ID: 1, MemberCount: 1, UpdatedAt: "2026-04-30T01:00:00Z"},
@@ -267,6 +331,23 @@ func TestClusterHelperBranches(t *testing.T) {
 	if summaries[0].ID != 1 {
 		t.Fatalf("recent sort = %+v", summaries)
 	}
+	summaries = []ClusterSummary{
+		{ID: 3, MemberCount: 2, UpdatedAt: "2026-04-30T01:00:00Z"},
+		{ID: 2, MemberCount: 2, UpdatedAt: "2026-04-30T01:00:00Z"},
+		{ID: 1, MemberCount: 3, UpdatedAt: "2026-04-30T00:00:00Z"},
+	}
+	sortClusterSummaries(summaries, "size")
+	if summaries[0].ID != 1 || summaries[1].ID != 2 {
+		t.Fatalf("size tie sort = %+v", summaries)
+	}
+	sortClusterSummaries(summaries, "oldest")
+	if summaries[0].ID != 1 || summaries[1].ID != 2 {
+		t.Fatalf("oldest tie sort = %+v", summaries)
+	}
+	sortClusterSummaries(summaries, "recent")
+	if summaries[0].ID != 2 || summaries[1].ID != 3 {
+		t.Fatalf("recent tie sort = %+v", summaries)
+	}
 	if ids := parseIDSet(`1, 2, 0, bad, 3`); len(ids) != 3 || !ids[2] {
 		t.Fatalf("parse id set = %+v", ids)
 	}
@@ -275,6 +356,15 @@ func TestClusterHelperBranches(t *testing.T) {
 	}
 	if got := snippetRunes("abcdef", 3); got != "abc" {
 		t.Fatalf("snippet = %q", got)
+	}
+	if got := rowsAffected(errorResult{}); got != 0 {
+		t.Fatalf("error rows affected = %d", got)
+	}
+	if got := nullString(""); got.Valid {
+		t.Fatalf("empty null string = %+v", got)
+	}
+	if got := nullString("x"); !got.Valid || got.String != "x" {
+		t.Fatalf("non-empty null string = %+v", got)
 	}
 	if func() (panicked bool) {
 		defer func() { panicked = recover() != nil }()
@@ -754,6 +844,16 @@ func TestPortableVacuumAndVectorQueryBranches(t *testing.T) {
 	if stats.BodyChars != 3 {
 		t.Fatalf("prune stats = %+v", stats)
 	}
+}
+
+type errorResult struct{}
+
+func (errorResult) LastInsertId() (int64, error) {
+	return 0, sql.ErrNoRows
+}
+
+func (errorResult) RowsAffected() (int64, error) {
+	return 0, sql.ErrNoRows
 }
 
 func seedVectorThreads(t *testing.T, ctx context.Context, st *Store) (int64, []int64) {

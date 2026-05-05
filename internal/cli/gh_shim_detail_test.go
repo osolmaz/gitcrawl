@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/openclaw/gitcrawl/internal/config"
@@ -111,6 +112,28 @@ func TestGHShimViewAndListUseLocalCache(t *testing.T) {
 	}
 	if len(list) != 1 || int(list[0]["number"].(float64)) != 10 {
 		t.Fatalf("filtered list = %#v", list)
+	}
+
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "issue", "view", "10", "-R", "openclaw/openclaw"}); err != nil {
+		t.Fatalf("gh issue human view: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "title:\tHot loop burns CPU") || !strings.Contains(got, "runtime has a hot loop") {
+		t.Fatalf("human issue view = %q", got)
+	}
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "issue", "list", "-R", "openclaw/openclaw", "--limit", "1"}); err != nil {
+		t.Fatalf("gh issue human list: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "10\tHot loop burns CPU") {
+		t.Fatalf("human issue list = %q", got)
+	}
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "pr", "list", "-R", "openclaw/openclaw", "--limit", "1"}); err != nil {
+		t.Fatalf("gh pr human list: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "12\tManifest cache update") {
+		t.Fatalf("human pr list = %q", got)
 	}
 }
 
