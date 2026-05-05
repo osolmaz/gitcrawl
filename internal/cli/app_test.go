@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1019,6 +1020,60 @@ func TestTUIInfersRepository(t *testing.T) {
 	}
 	if !bytes.Equal(after, before) {
 		t.Fatal("tui mutated database bytes")
+	}
+}
+
+func TestTUIJSONUsesDefaultsWhenConfigMissing(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "missing.toml")
+	t.Setenv("GITCRAWL_DB_PATH", filepath.Join(dir, "missing.db"))
+
+	run := New()
+	var stdout bytes.Buffer
+	run.Stdout = &stdout
+	if err := run.Run(ctx, []string{"--config", configPath, "tui", "--json"}); err != nil {
+		t.Fatalf("tui: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode tui payload: %v\n%s", err, stdout.String())
+	}
+	if payload["mode"] != "cluster-browser" {
+		t.Fatalf("mode = %#v", payload["mode"])
+	}
+	clusters, ok := payload["clusters"].([]any)
+	if !ok || len(clusters) != 0 {
+		t.Fatalf("clusters = %#v", payload["clusters"])
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("config file should not be created, stat err=%v", err)
+	}
+}
+
+func TestTUIJSONHandlesEmptyStoreWithoutRepository(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	dbPath := filepath.Join(dir, "gitcrawl.db")
+	app := New()
+	if err := app.Run(ctx, []string{"--config", configPath, "init", "--db", dbPath}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	run := New()
+	var stdout bytes.Buffer
+	run.Stdout = &stdout
+	if err := run.Run(ctx, []string{"--config", configPath, "tui", "--json"}); err != nil {
+		t.Fatalf("tui: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode tui payload: %v\n%s", err, stdout.String())
+	}
+	clusters, ok := payload["clusters"].([]any)
+	if !ok || len(clusters) != 0 {
+		t.Fatalf("clusters = %#v", payload["clusters"])
 	}
 }
 

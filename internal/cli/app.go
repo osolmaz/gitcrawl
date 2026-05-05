@@ -1083,23 +1083,35 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		rt, err = a.openLocalRuntimeReadOnly(ctx)
 	}
 	if err != nil {
+		if !interactive && errors.Is(err, os.ErrNotExist) {
+			cfg := config.Default()
+			if cfgErr := cfg.Normalize(); cfgErr != nil {
+				return cfgErr
+			}
+			sort, sortErr := resolveTUISort(*sortMode, cfg)
+			if sortErr != nil {
+				return sortErr
+			}
+			return a.writeOutput("tui", emptyClusterBrowserPayload(ctx, cfg, cfg.DBPath, sort, minSize, limit, *hideClosed), true)
+		}
 		return err
 	}
 	defer rt.Store.Close()
 
 	repo, inferred, err := a.resolveOptionalRepository(ctx, rt, fs.Args())
 	if err != nil {
+		if !interactive && len(fs.Args()) == 0 && strings.Contains(err.Error(), "no local repositories found") {
+			sort, sortErr := resolveTUISort(*sortMode, rt.Config)
+			if sortErr != nil {
+				return sortErr
+			}
+			return a.writeOutput("tui", emptyClusterBrowserPayload(ctx, rt.Config, rt.SourceDBPath, sort, minSize, limit, *hideClosed), true)
+		}
 		return err
 	}
-	sort := strings.TrimSpace(*sortMode)
-	if sort == "" {
-		sort = strings.TrimSpace(rt.Config.TUI.DefaultSort)
-	}
-	if sort == "" {
-		sort = "size"
-	}
-	if sort != "recent" && sort != "oldest" && sort != "size" {
-		return usageErr(fmt.Errorf("unsupported sort %q", sort))
+	sort, err := resolveTUISort(*sortMode, rt.Config)
+	if err != nil {
+		return err
 	}
 	showClosed := !*hideClosed || *includeClosed
 
@@ -1152,6 +1164,38 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		return a.writeOutput("tui", payload, true)
 	}
 	return a.runInteractiveTUI(ctx, rt.Store, repo.ID, payload)
+}
+
+func resolveTUISort(raw string, cfg config.Config) (string, error) {
+	sort := strings.TrimSpace(raw)
+	if sort == "" {
+		sort = strings.TrimSpace(cfg.TUI.DefaultSort)
+	}
+	if sort == "" {
+		sort = "size"
+	}
+	if sort != "recent" && sort != "oldest" && sort != "size" {
+		return "", usageErr(fmt.Errorf("unsupported sort %q", sort))
+	}
+	return sort, nil
+}
+
+func emptyClusterBrowserPayload(ctx context.Context, cfg config.Config, sourceDBPath, sort string, minSize, limit int, hideClosed bool) clusterBrowserPayload {
+	if strings.TrimSpace(sourceDBPath) == "" {
+		sourceDBPath = cfg.DBPath
+	}
+	return clusterBrowserPayload{
+		Mode:           "cluster-browser",
+		DBSource:       databaseSourceKind(sourceDBPath),
+		DBLocation:     databaseSourceLocation(ctx, sourceDBPath),
+		Sort:           sort,
+		MinSize:        minSize,
+		Limit:          limit,
+		HideClosed:     hideClosed,
+		EmbedModel:     cfg.OpenAI.EmbedModel,
+		EmbeddingBasis: cfg.EmbeddingBasis,
+		Clusters:       []store.ClusterSummary{},
+	}
 }
 
 func databaseSourceKind(dbPath string) string {
