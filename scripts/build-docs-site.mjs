@@ -219,7 +219,7 @@ function markdownToHtml(markdown, currentRel) {
       closeList();
       flushBlockquote();
       if (fence) {
-        html.push(`<pre><code class="language-${fence.lang}">${escapeHtml(fence.lines.join("\n"))}</code></pre>`);
+        html.push(`<pre><code class="language-${escapeAttr(fence.lang)}">${highlightCode(fence.lines.join("\n"), fence.lang)}</code></pre>`);
         fence = null;
       } else {
         fence = { lang: fenceMatch[1] || "text", lines: [] };
@@ -302,6 +302,89 @@ function markdownToHtml(markdown, currentRel) {
   closeList();
   flushBlockquote();
   return html.join("\n");
+}
+
+function highlightCode(code, lang) {
+  const normalized = String(lang || "text").toLowerCase();
+  if (["bash", "sh", "shell", "zsh"].includes(normalized)) return highlightBash(code);
+  if (normalized === "json") return highlightJSON(code);
+  if (normalized === "toml") return highlightConfig(code, "toml");
+  if (["yaml", "yml"].includes(normalized)) return highlightConfig(code, "yaml");
+  if (normalized === "cron") return highlightCron(code);
+  return escapeHtml(code);
+}
+
+function highlightBash(code) {
+  return code.split("\n").map((line) => {
+    if (/^\s*#/.test(line)) return span("comment", line);
+    return highlightSegments(line, /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`[^`]*`|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|--?[A-Za-z0-9][A-Za-z0-9_-]*|\b(?:brew|case|cd|curl|do|done|else|esac|export|fi|for|gh|git|gitcrawl|go|if|in|jq|ln|local|mkdir|set|then|while)\b|#.*)/g, (token) => {
+      if (token.startsWith("#")) return span("comment", token);
+      if (/^["'`]/.test(token)) return span("string", token);
+      if (token.startsWith("$")) return span("variable", token);
+      if (token.startsWith("-")) return span("option", token);
+      return span("keyword", token);
+    });
+  }).join("\n");
+}
+
+function highlightJSON(code) {
+  return highlightSegments(code, /("(?:\\.|[^"\\])*"\s*:)|("(?:\\.|[^"\\])*")|\b(?:true|false|null)\b|-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/g, (token) => {
+    if (token.endsWith(":")) return `${span("key", token.slice(0, -1))}:`;
+    if (token.startsWith('"')) return span("string", token);
+    if (/^(?:true|false|null)$/.test(token)) return span("literal", token);
+    return span("number", token);
+  });
+}
+
+function highlightConfig(code, lang) {
+  return code.split("\n").map((line) => {
+    if (/^\s*#/.test(line)) return span("comment", line);
+    const commentMatch = line.match(/(^|[^"'])#.*/);
+    const commentStart = commentMatch ? commentMatch.index + commentMatch[1].length : -1;
+    const body = commentStart >= 0 ? line.slice(0, commentStart) : line;
+    const comment = commentStart >= 0 ? line.slice(commentStart) : "";
+    const highlighted = lang === "toml"
+      ? highlightSegments(body, /(^\s*[A-Za-z0-9_.-]+(?=\s*=))|("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|\b(?:true|false)\b|-?\b\d+(?:\.\d+)?\b/g, configToken)
+      : highlightSegments(body, /(^\s*[A-Za-z0-9_.-]+(?=\s*:))|("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|\b(?:true|false|null)\b|-?\b\d+(?:\.\d+)?\b/g, configToken);
+    return highlighted + (comment ? span("comment", comment) : "");
+  }).join("\n");
+}
+
+function configToken(token) {
+  if (/^\s*[A-Za-z0-9_.-]+$/.test(token)) {
+    const leading = token.match(/^\s*/)[0];
+    return `${escapeHtml(leading)}${span("key", token.slice(leading.length))}`;
+  }
+  if (/^["']/.test(token)) return span("string", token);
+  if (/^(?:true|false|null)$/.test(token)) return span("literal", token);
+  return span("number", token);
+}
+
+function highlightCron(code) {
+  return code.split("\n").map((line) => {
+    if (/^\s*#/.test(line)) return span("comment", line);
+    return highlightSegments(line, /(\*|(?:\d+)(?:[-/,]\d+)*)|("[^"]*"|'[^']*')|#.*|\b[A-Z_][A-Z0-9_]*=/g, (token) => {
+      if (token.startsWith("#")) return span("comment", token);
+      if (/^["']/.test(token)) return span("string", token);
+      if (token.endsWith("=")) return span("key", token.slice(0, -1)) + "=";
+      return span("number", token);
+    });
+  }).join("\n");
+}
+
+function highlightSegments(text, pattern, classify) {
+  let out = "";
+  let last = 0;
+  for (const match of text.matchAll(pattern)) {
+    out += escapeHtml(text.slice(last, match.index));
+    out += classify(match[0]);
+    last = match.index + match[0].length;
+  }
+  return out + escapeHtml(text.slice(last));
+}
+
+function span(kind, value) {
+  return `<span class="hl-${kind}">${escapeHtml(value)}</span>`;
 }
 
 function inline(text, currentRel) {
