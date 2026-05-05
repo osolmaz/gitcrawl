@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestListEmbeddingTasksUsesLatestLLMKeySummary(t *testing.T) {
@@ -89,12 +90,38 @@ func TestEmbeddingTextForBasisCapsLongInputs(t *testing.T) {
 	}
 }
 
-func TestEmbeddingContentHashVersionTracksCurrentRuneCap(t *testing.T) {
+func TestEmbeddingTextForBasisCapsTokenDenseInputsByBytes(t *testing.T) {
+	body := strings.Repeat("界", MaxEmbeddingTextRunes)
+	text, meta, err := embeddingTextForBasisWithMeta("title_original", "oversized unicode", body, "", "", "")
+	if err != nil {
+		t.Fatalf("embedding text: %v", err)
+	}
+	if !meta.Truncated {
+		t.Fatal("token-dense embedding text should be marked truncated")
+	}
+	if got := len([]byte(text)); got > MaxEmbeddingTextBytes {
+		t.Fatalf("truncated bytes = %d, want <= %d", got, MaxEmbeddingTextBytes)
+	}
+	if !utf8.ValidString(text) {
+		t.Fatal("truncated text is not valid UTF-8")
+	}
+	if got := len([]rune(text)); got >= MaxEmbeddingTextRunes {
+		t.Fatalf("truncated runes = %d, want byte cap to apply before rune cap %d", got, MaxEmbeddingTextRunes)
+	}
+	if meta.OriginalRunes <= meta.Runes {
+		t.Fatalf("meta = %+v", meta)
+	}
+}
+
+func TestEmbeddingContentHashVersionTracksCurrentInputCaps(t *testing.T) {
 	if embeddingContentHash("title_original", "test", "body") == "" {
 		t.Fatal("embedding content hash should be non-empty")
 	}
 	material := embeddingContentHashMaterial("title_original", "test", "body")
 	if want := fmt.Sprintf("max_runes=%d", MaxEmbeddingTextRunes); !strings.Contains(material, want) {
+		t.Fatalf("embedding hash material should include %s", want)
+	}
+	if want := fmt.Sprintf("max_bytes=%d", MaxEmbeddingTextBytes); !strings.Contains(material, want) {
 		t.Fatalf("embedding hash material should include %s", want)
 	}
 	if strings.Contains(material, "max_runes=24000") {

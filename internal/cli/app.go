@@ -783,7 +783,7 @@ func (a *App) embedRepository(ctx context.Context, owner, repoName string, optio
 		fmt.Fprintf(a.Stderr, "[embed] embedding %d-%d of %d (attempt %d)\n", batch.start+1, batch.end, len(tasks), batch.attempts)
 		if batch.attempts == 1 {
 			if truncated := truncatedEmbeddingTaskCount(slice); truncated > 0 {
-				fmt.Fprintf(a.Stderr, "[embed] truncated %d input(s) to %d runes\n", truncated, store.MaxEmbeddingTextRunes)
+				fmt.Fprintf(a.Stderr, "[embed] truncated %d input(s) to embedding input budget (%d runes/%d bytes)\n", truncated, store.MaxEmbeddingTextRunes, store.MaxEmbeddingTextBytes)
 			}
 		}
 		vectors, err := client.Embed(ctx, rt.Config.OpenAI.EmbedModel, texts)

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestEmbedAcceptsLargeBatchResponse(t *testing.T) {
@@ -76,6 +77,42 @@ func TestEmbedCapsOversizedInputsBeforeRequest(t *testing.T) {
 	defer server.Close()
 
 	input := strings.Repeat("x", maxEmbeddingInputRunes+50)
+	vectors, err := New(Options{APIKey: "test", BaseURL: server.URL}).Embed(context.Background(), "text-embedding-3-small", []string{input})
+	if err != nil {
+		t.Fatalf("embed: %v", err)
+	}
+	if len(vectors) != 1 || len(vectors[0]) != 1 {
+		t.Fatalf("vectors = %#v", vectors)
+	}
+}
+
+func TestEmbedCapsTokenDenseInputsByBytesBeforeRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request embeddingRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(request.Input) != 1 {
+			t.Fatalf("inputs = %d, want 1", len(request.Input))
+		}
+		input := request.Input[0]
+		if got := len([]byte(input)); got > maxEmbeddingInputBytes {
+			t.Fatalf("input bytes = %d, want <= %d", got, maxEmbeddingInputBytes)
+		}
+		if !utf8.ValidString(input) {
+			t.Fatal("input was truncated in the middle of a UTF-8 rune")
+		}
+		if got := len([]rune(input)); got >= maxEmbeddingInputRunes {
+			t.Fatalf("input runes = %d, want byte cap to apply before rune cap %d", got, maxEmbeddingInputRunes)
+		}
+		_ = json.NewEncoder(w).Encode(embeddingResponse{Data: []struct {
+			Index     int       `json:"index"`
+			Embedding []float64 `json:"embedding"`
+		}{{Index: 0, Embedding: []float64{1}}}})
+	}))
+	defer server.Close()
+
+	input := strings.Repeat("界", maxEmbeddingInputRunes)
 	vectors, err := New(Options{APIKey: "test", BaseURL: server.URL}).Embed(context.Background(), "text-embedding-3-small", []string{input})
 	if err != nil {
 		t.Fatalf("embed: %v", err)

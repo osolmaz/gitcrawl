@@ -18,6 +18,7 @@ const (
 	defaultBaseURL            = "https://api.openai.com/v1"
 	maxEmbeddingResponseBytes = 64 << 20
 	maxEmbeddingInputRunes    = 6_000
+	maxEmbeddingInputBytes    = 7_000
 )
 
 type RetryConfig struct {
@@ -304,11 +305,21 @@ func isContextErr(err error) bool {
 func capEmbeddingInputs(texts []string) []string {
 	out := make([]string, len(texts))
 	for index, text := range texts {
-		runes := []rune(text)
-		if len(runes) > maxEmbeddingInputRunes {
-			text = string(runes[:maxEmbeddingInputRunes])
-		}
-		out[index] = text
+		out[index] = capEmbeddingInput(text)
 	}
 	return out
+}
+
+func capEmbeddingInput(text string) string {
+	runes := 0
+	bytes := 0
+	for end, r := range text {
+		runeBytes := len(string(r))
+		if runes >= maxEmbeddingInputRunes || bytes+runeBytes > maxEmbeddingInputBytes {
+			return text[:end]
+		}
+		runes++
+		bytes += runeBytes
+	}
+	return text
 }

@@ -32,7 +32,8 @@ type EmbeddingTaskOptions struct {
 
 const (
 	MaxEmbeddingTextRunes       = 6_000
-	embeddingContentHashVersion = "embedding:v3"
+	MaxEmbeddingTextBytes       = 7_000
+	embeddingContentHashVersion = "embedding:v4"
 )
 
 func (s *Store) ListEmbeddingTasks(ctx context.Context, options EmbeddingTaskOptions) ([]EmbeddingTask, error) {
@@ -146,14 +147,30 @@ func embeddingTextForBasisWithMeta(basis, title, body, rawText, dedupeText, keyS
 }
 
 func capEmbeddingText(text string) (string, embeddingTextMeta) {
-	runes := []rune(strings.TrimSpace(text))
+	text = strings.TrimSpace(text)
+	runes := []rune(text)
 	meta := embeddingTextMeta{OriginalRunes: len(runes), Runes: len(runes)}
-	if len(runes) <= MaxEmbeddingTextRunes {
-		return string(runes), meta
+	capped := capStringByRunesAndBytes(text, MaxEmbeddingTextRunes, MaxEmbeddingTextBytes)
+	if capped == text {
+		return text, meta
 	}
 	meta.Truncated = true
-	meta.Runes = MaxEmbeddingTextRunes
-	return string(runes[:MaxEmbeddingTextRunes]), meta
+	meta.Runes = len([]rune(capped))
+	return capped, meta
+}
+
+func capStringByRunesAndBytes(text string, maxRunes, maxBytes int) string {
+	runes := 0
+	bytes := 0
+	for end, r := range text {
+		runeBytes := len(string(r))
+		if runes >= maxRunes || bytes+runeBytes > maxBytes {
+			return text[:end]
+		}
+		runes++
+		bytes += runeBytes
+	}
+	return text
 }
 
 func embeddingContentHash(basis, model, text string) string {
@@ -162,5 +179,5 @@ func embeddingContentHash(basis, model, text string) string {
 }
 
 func embeddingContentHashMaterial(basis, model, text string) string {
-	return fmt.Sprintf("%s:max_runes=%d:%s:%s\n%s", embeddingContentHashVersion, MaxEmbeddingTextRunes, basis, model, text)
+	return fmt.Sprintf("%s:max_runes=%d:max_bytes=%d:%s:%s\n%s", embeddingContentHashVersion, MaxEmbeddingTextRunes, MaxEmbeddingTextBytes, basis, model, text)
 }
