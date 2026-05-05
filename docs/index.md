@@ -9,7 +9,7 @@ permalink: /
 # gitcrawl
 {: .fs-9 }
 
-A local-first GitHub issue and pull request crawler for maintainer triage. Sync, search, cluster, and review related threads from a SQLite cache that lives entirely on your machine.
+A local-first GitHub triage tool **and** a drop-in caching `gh` shim. Sync issues and PRs into SQLite for search and clustering — then let agents call `gh` against that same cache so you stop burning the API rate limit.
 {: .fs-6 .fw-300 }
 
 [Quickstart](/quickstart/){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
@@ -17,13 +17,19 @@ A local-first GitHub issue and pull request crawler for maintainer triage. Sync,
 
 ---
 
-## What gitcrawl does
+## Two jobs, one binary
 
-`gitcrawl` mirrors a GitHub repository's issues and pull requests into local SQLite, then layers semantic clustering, full-text search, and a `gh`-compatible shim on top so a maintainer (or an agent acting on their behalf) can triage threads without burning live API quota.
+`gitcrawl` mirrors a GitHub repository's issues and pull requests into local SQLite, then layers semantic clustering, full-text search, and a `gh`-compatible shim on top — so a maintainer (or an agent acting on their behalf) can triage threads *and* serve everyday `gh` reads without burning live API quota.
 
 - **Local SQLite first.** All issues, PRs, comments, reviews, files, commits, checks, and workflow runs land in `~/.config/gitcrawl/gitcrawl.db`. Queries hit the disk, not GitHub.
+- **Drop-in `gh` cache.** Symlink `gitcrawl-gh` as `gh` and most read-only calls (`gh search`, `gh issue/pr view`, `gh pr checks`, `gh run`, REST GETs, GraphQL queries) answer from local SQLite. Agents stop hitting rate limits; mutating commands pass through unchanged.
+
+  ```bash
+  ln -s "$(which gitcrawl-gh)" ~/bin/gh
+  gh xcache stats   # see hit rate, per-command misses, evictions
+  ```
+
 - **Semantic clustering.** OpenAI embeddings group related reports, with deterministic GitHub reference evidence (`#123`, `pull/123`) preventing weak similarity bridges from forming mega-clusters.
-- **`gh`-compatible shim.** Drop `gitcrawl gh` (or symlink it as `gh`) into agent workflows and most read-only `gh search`, `gh issue/pr view`, `gh pr checks`, and `gh run` calls answer from local cache instead of the GitHub API.
 - **Terminal UI.** `gitcrawl tui` is a keyboard- and mouse-driven cluster browser with bidirectional sort, jump-to-number, neighbors, and member-level governance actions.
 - **Agent-friendly JSON.** Every command supports `--json` for clean automation surfaces.
 
