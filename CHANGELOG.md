@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.3.0 - Unreleased
+
 ## 0.2.0 - 2026-05-05
 
 - Add Homebrew tap installation via `brew install openclaw/tap/gitcrawl`.
