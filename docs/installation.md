@@ -20,6 +20,14 @@ permalink: /installation/
 
 gitcrawl runs on macOS and Linux. Windows is not actively tested.
 
+## Install from Homebrew
+
+```bash
+brew install steipete/tap/gitcrawl
+```
+
+Homebrew installs the `gitcrawl` binary. If you also want the GitHub CLI shim behavior, add a `gh` or `gitcrawl-gh` symlink as shown below.
+
 ## Install from a GitHub release
 
 Each tagged release publishes archives for `darwin_amd64`, `darwin_arm64`, `linux_amd64`, and `linux_arm64` via [GoReleaser](https://github.com/openclaw/gitcrawl/blob/main/.goreleaser.yaml).

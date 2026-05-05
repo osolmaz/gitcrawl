@@ -1,7 +1,8 @@
 # Changelog
 
-## 0.2.0 - Unreleased
+## 0.2.0 - 2026-05-05
 
+- Add Homebrew tap installation via `brew install steipete/tap/gitcrawl`.
 - Improve the `gh` shim cache with canonicalized keys, targeted mutation invalidation, stale-on-rate-limit fallback reads, completed-run TTLs, hit-rate stats, counter reset, and issue auto-hydration.
 - Add dark-mode support, a theme toggle, and clearer navigation styling to the generated docs site.
 - Force embedding refreshes when the embedding input rune cap changes, so stale larger-cap vectors are not reused.
