@@ -113,7 +113,7 @@ gitcrawl gh issue list -R owner/repo --state open --search "hot loop" --json num
 gitcrawl gh pr list -R owner/repo --state open --search "manifest cache" --json number,title,url
 ```
 
-Unsupported commands fall through to the real GitHub CLI. Read-only fallthroughs use a short persistent cache in `cache/gh-shim` for repeated agent calls (`run list/view`, `pr diff/checks`, `repo view/list`, `label list`, `issue/pr view`, and GET-only `api`). Mutating commands are never cached and clear the fallthrough cache on success. The shim does not add GitHub write-back behavior of its own; writes remain delegated to `gh`.
+Unsupported commands fall through to the real GitHub CLI. Read-only fallthroughs use a short persistent cache in `cache/gh-shim` for repeated agent calls (`run list/view`, `pr diff/checks/list/status/view`, `issue list/status/view`, `repo view/list`, `release list/view`, `workflow list/view`, `secret list`, `variable get/list`, `project` list/view reads, `ruleset` reads, `gist` reads, `org list`, `label list`, read-only `search` kinds, and GET-only `api`). Repeat read failures are cached by default so many agents do not rediscover the same missing release, workflow, or field; set `GITCRAWL_GH_CACHE_ERRORS=0` to disable that behavior. Mutating commands are never cached and clear the fallthrough cache on success. The shim does not add GitHub write-back behavior of its own; writes remain delegated to `gh`.
 
 Cache inspection commands:
 

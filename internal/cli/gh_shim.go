@@ -28,7 +28,7 @@ func (a *App) runGHShim(ctx context.Context, args []string) error {
 		if len(args) >= 2 && isGHSearchKind(args[1]) {
 			if err := a.runGHSearch(ctx, args[1:]); err != nil {
 				if isLocalGHUnsupported(err) {
-					return a.execRealGH(ctx, args)
+					return a.execRealGHMaybeCached(ctx, args)
 				}
 				return err
 			}
