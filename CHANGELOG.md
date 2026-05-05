@@ -3,6 +3,7 @@
 ## 0.1.3 - Unreleased
 
 - Force embedding refreshes when the embedding input rune cap changes, so stale larger-cap vectors are not reused.
+- Expand the `gh` shim with local list filters, PR diff caching by cached head SHA, xcache GC, hit/miss/write counters, and throttled portable-store refreshes to reduce GitHub API pressure across agent sessions.
 
 ## 0.1.2 - 2026-05-01
 

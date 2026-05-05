@@ -72,6 +72,17 @@ func TestGHShimViewAndListUseLocalCache(t *testing.T) {
 	if len(list) != 1 || int(list[0]["number"].(float64)) != 10 {
 		t.Fatalf("list = %#v", list)
 	}
+
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "issue", "list", "-R", "openclaw/openclaw", "--author", "alice", "--assignee", "peter", "--label", "bug", "--json", "number,title"}); err != nil {
+		t.Fatalf("gh issue list filtered: %v", err)
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &list); err != nil {
+		t.Fatalf("decode filtered list: %v\n%s", err, stdout.String())
+	}
+	if len(list) != 1 || int(list[0]["number"].(float64)) != 10 {
+		t.Fatalf("filtered list = %#v", list)
+	}
 }
 
 func TestGHShimFallsBackForUnsupportedRead(t *testing.T) {
@@ -152,6 +163,10 @@ echo "call-$count:$*"
 	if int(stats["entries"].(float64)) != 1 {
 		t.Fatalf("stats = %#v", stats)
 	}
+	counters := stats["counters"].(map[string]any)
+	if int(counters["backend_misses"].(float64)) != 1 || int(counters["fallback_hits"].(float64)) != 1 {
+		t.Fatalf("counters = %#v", counters)
+	}
 
 	stdout.Reset()
 	if err := run.Run(ctx, []string{"--config", configPath, "gh", "xcache", "keys", "--json"}); err != nil {
@@ -175,6 +190,114 @@ echo "call-$count:$*"
 	}
 	if int(flushed["removed"].(float64)) != 1 {
 		t.Fatalf("flushed = %#v", flushed)
+	}
+}
+
+func TestGHShimCachesPRDiffByHeadSHA(t *testing.T) {
+	ctx := context.Background()
+	configPath := seedGHShimRepo(t, ctx)
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "count")
+	ghPath := filepath.Join(dir, "gh")
+	script := `#!/bin/sh
+count=0
+if [ -f "$GH_SHIM_COUNT" ]; then
+  count=$(cat "$GH_SHIM_COUNT")
+fi
+count=$((count + 1))
+printf "%s" "$count" > "$GH_SHIM_COUNT"
+echo "diff-$count:$*"
+`
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("GITCRAWL_GH_PATH", ghPath)
+	t.Setenv("GH_SHIM_COUNT", countPath)
+
+	run := New()
+	var stdout bytes.Buffer
+	run.Stdout = &stdout
+	args := []string{"--config", configPath, "gh", "pr", "diff", "12", "-R", "openclaw/openclaw"}
+	if err := run.Run(ctx, args); err != nil {
+		t.Fatalf("first pr diff: %v", err)
+	}
+	stdout.Reset()
+	if err := run.Run(ctx, args); err != nil {
+		t.Fatalf("second pr diff: %v", err)
+	}
+	countData, err := os.ReadFile(countPath)
+	if err != nil {
+		t.Fatalf("read count: %v", err)
+	}
+	if strings.TrimSpace(string(countData)) != "1" {
+		t.Fatalf("fake gh call count = %q, want 1", countData)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	st, err := store.Open(ctx, cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	repo, err := st.RepositoryByFullName(ctx, "openclaw/openclaw")
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+	if _, err := st.UpsertThread(ctx, store.Thread{
+		RepoID: repo.ID, GitHubID: "12", Number: 12, Kind: "pull_request", State: "open",
+		Title: "Manifest cache update", AuthorLogin: "bob", AuthorType: "User",
+		HTMLURL: "https://github.com/openclaw/openclaw/pull/12", LabelsJSON: "[]", AssigneesJSON: "[]",
+		RawJSON: `{"head":{"sha":"def456"}}`, ContentHash: "pr-12-new", IsDraft: true,
+		UpdatedAtGitHub: "2026-04-27T03:00:00Z", UpdatedAt: "2026-04-27T03:00:00Z",
+	}); err != nil {
+		t.Fatalf("update pr head: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	stdout.Reset()
+	if err := run.Run(ctx, args); err != nil {
+		t.Fatalf("third pr diff after head change: %v", err)
+	}
+	countData, err = os.ReadFile(countPath)
+	if err != nil {
+		t.Fatalf("read count after update: %v", err)
+	}
+	if strings.TrimSpace(string(countData)) != "2" {
+		t.Fatalf("fake gh call count after head update = %q, want 2", countData)
+	}
+}
+
+func TestGHShimXCacheGCRemovesExpiredEntries(t *testing.T) {
+	ctx := context.Background()
+	configPath := seedGHShimRepo(t, ctx)
+	dir := t.TempDir()
+	ghPath := filepath.Join(dir, "gh")
+	if err := os.WriteFile(ghPath, []byte("#!/bin/sh\necho cached:$*\n"), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("GITCRAWL_GH_PATH", ghPath)
+	t.Setenv("GITCRAWL_GH_CACHE_TTL", "1ns")
+
+	run := New()
+	var stdout bytes.Buffer
+	run.Stdout = &stdout
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "run", "view", "789", "-R", "openclaw/openclaw"}); err != nil {
+		t.Fatalf("cached read: %v", err)
+	}
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "xcache", "gc", "--json"}); err != nil {
+		t.Fatalf("xcache gc: %v", err)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode gc: %v\n%s", err, stdout.String())
+	}
+	if int(result["removed"].(float64)) != 1 {
+		t.Fatalf("gc = %#v", result)
 	}
 }
 
@@ -289,7 +412,7 @@ func seedGHShimRepo(t *testing.T, ctx context.Context) string {
 		AuthorType:      "User",
 		HTMLURL:         "https://github.com/openclaw/openclaw/issues/10",
 		LabelsJSON:      `[{"name":"bug","color":"d73a4a"}]`,
-		AssigneesJSON:   "[]",
+		AssigneesJSON:   `[{"login":"peter"}]`,
 		RawJSON:         "{}",
 		ContentHash:     "issue-10",
 		UpdatedAtGitHub: "2026-04-27T01:00:00Z",
@@ -313,7 +436,7 @@ func seedGHShimRepo(t *testing.T, ctx context.Context) string {
 		HTMLURL:         "https://github.com/openclaw/openclaw/pull/12",
 		LabelsJSON:      "[]",
 		AssigneesJSON:   "[]",
-		RawJSON:         "{}",
+		RawJSON:         `{"head":{"sha":"abc123"}}`,
 		ContentHash:     "pr-12",
 		IsDraft:         true,
 		UpdatedAtGitHub: "2026-04-27T02:00:00Z",

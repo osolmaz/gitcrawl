@@ -355,6 +355,21 @@ func TestReadCommandRefreshesPortableStore(t *testing.T) {
 	if _, err := os.Stat(mirrorPath); err != nil {
 		t.Fatalf("runtime mirror db was not created: %v", err)
 	}
+
+	seedPortableThread(t, filepath.Join(remoteDir, dbRel), 3, "too soon issue")
+	if err := runGit(ctx, remoteDir, "add", dbRel); err != nil {
+		t.Fatalf("git add second update: %v", err)
+	}
+	if err := runGit(ctx, remoteDir, "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "second update"); err != nil {
+		t.Fatalf("git commit second update: %v", err)
+	}
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "threads", "openclaw/openclaw", "--numbers", "3", "--json"}); err != nil {
+		t.Fatalf("threads within refresh ttl: %v", err)
+	}
+	if strings.Contains(stdout.String(), "too soon issue") {
+		t.Fatalf("read command should not refresh portable store again within ttl, got %q", stdout.String())
+	}
 }
 
 func TestReadCommandUsesCachedPortableStoreWhenRefreshFails(t *testing.T) {

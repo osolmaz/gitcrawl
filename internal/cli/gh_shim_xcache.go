@@ -18,6 +18,7 @@ type ghCommandCacheStats struct {
 	Expired  int                            `json:"expired"`
 	Locks    int                            `json:"locks"`
 	Bytes    int64                          `json:"bytes"`
+	Counters ghXCacheCounters               `json:"counters"`
 	Commands map[string]ghCommandCacheCount `json:"commands"`
 }
 
@@ -38,7 +39,7 @@ type ghCommandCacheKeyInfo struct {
 
 func (a *App) runGHXCache(args []string) error {
 	if len(args) == 0 {
-		return usageErr(fmt.Errorf("usage: gh xcache <stats|keys|flush>"))
+		return usageErr(fmt.Errorf("usage: gh xcache <stats|keys|gc|flush>"))
 	}
 	fs := flag.NewFlagSet("xcache "+args[0], flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -52,6 +53,8 @@ func (a *App) runGHXCache(args []string) error {
 		return a.runGHXCacheStats()
 	case "keys":
 		return a.runGHXCacheKeys()
+	case "gc":
+		return a.runGHXCacheGC()
 	case "flush":
 		return a.runGHXCacheFlush()
 	default:
@@ -78,6 +81,8 @@ func (a *App) runGHXCacheStats() error {
 			_, _ = fmt.Fprintf(a.Stdout, "  %-16s %d entries / %d bytes\n", command, count.Entries, count.Bytes)
 		}
 	}
+	_, _ = fmt.Fprintf(a.Stdout, "\nCounters:\n  local hits:          %d\n  fallback hits:       %d\n  backend misses:      %d\n  pass-through writes: %d\n",
+		stats.Counters.LocalHits, stats.Counters.FallbackHits, stats.Counters.BackendMisses, stats.Counters.PassThroughWrites)
 	return nil
 }
 
@@ -109,6 +114,23 @@ func (a *App) runGHXCacheFlush() error {
 	return err
 }
 
+type ghCommandCacheGCResult struct {
+	Removed      int `json:"removed"`
+	LocksRemoved int `json:"locks_removed"`
+}
+
+func (a *App) runGHXCacheGC() error {
+	result, err := a.gcGHCommandCache()
+	if err != nil {
+		return err
+	}
+	if a.format == FormatJSON {
+		return a.writeJSONValue(result, "")
+	}
+	_, err = fmt.Fprintf(a.Stdout, "Removed %d expired entrie(s), %d stale lock(s)\n", result.Removed, result.LocksRemoved)
+	return err
+}
+
 func (a *App) ghCommandCacheStats() (ghCommandCacheStats, error) {
 	dir, err := a.ghCommandCacheDir()
 	if err != nil {
@@ -118,7 +140,8 @@ func (a *App) ghCommandCacheStats() (ghCommandCacheStats, error) {
 	if err != nil {
 		return ghCommandCacheStats{}, err
 	}
-	stats := ghCommandCacheStats{CacheDir: dir, Locks: locks, Commands: map[string]ghCommandCacheCount{}}
+	counters, _ := a.ghXCacheCounters()
+	stats := ghCommandCacheStats{CacheDir: dir, Locks: locks, Counters: counters, Commands: map[string]ghCommandCacheCount{}}
 	for _, key := range keys {
 		if key.Expired {
 			stats.Expired++
@@ -132,6 +155,41 @@ func (a *App) ghCommandCacheStats() (ghCommandCacheStats, error) {
 		stats.Commands[key.Command] = count
 	}
 	return stats, nil
+}
+
+func (a *App) gcGHCommandCache() (ghCommandCacheGCResult, error) {
+	dir, err := a.ghCommandCacheDir()
+	if err != nil {
+		return ghCommandCacheGCResult{}, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ghCommandCacheGCResult{}, err
+	}
+	var result ghCommandCacheGCResult
+	for _, entry := range entries {
+		name := entry.Name()
+		path := filepath.Join(dir, name)
+		if strings.HasSuffix(name, ".lock") {
+			info, err := entry.Info()
+			if err == nil && staleGHCommandCacheLock(info) {
+				if err := os.Remove(path); err == nil {
+					result.LocksRemoved++
+				}
+			}
+			continue
+		}
+		if !entry.Type().IsRegular() || !isGHCommandCacheEntryFile(name) {
+			continue
+		}
+		key, ok := ghCommandCacheKeyInfoFromDirEntry(dir, entry)
+		if ok && key.Expired {
+			if err := os.Remove(path); err == nil {
+				result.Removed++
+			}
+		}
+	}
+	return result, nil
 }
 
 func (a *App) ghCommandCacheKeys() ([]ghCommandCacheKeyInfo, error) {
@@ -156,7 +214,7 @@ func (a *App) collectGHCommandCacheKeys(dir string) ([]ghCommandCacheKeyInfo, in
 			locks++
 			continue
 		}
-		if !entry.Type().IsRegular() || !strings.HasSuffix(name, ".json") {
+		if !entry.Type().IsRegular() || !isGHCommandCacheEntryFile(name) {
 			continue
 		}
 		key, ok := ghCommandCacheKeyInfoFromDirEntry(dir, entry)

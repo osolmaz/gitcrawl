@@ -24,6 +24,9 @@ type ThreadSearchOptions struct {
 	Query                string
 	Kind                 string
 	State                string
+	Author               string
+	Assignee             string
+	Labels               []string
 	IncludeLocallyClosed bool
 	Limit                int
 }
@@ -191,6 +194,29 @@ func threadSearchWhere(options ThreadSearchOptions) ([]string, []any) {
 	if strings.TrimSpace(options.State) != "" && strings.TrimSpace(options.State) != "all" {
 		where = append(where, `t.state = ?`)
 		args = append(args, strings.TrimSpace(options.State))
+	}
+	if author := strings.TrimSpace(options.Author); author != "" {
+		where = append(where, `lower(coalesce(t.author_login, '')) = lower(?)`)
+		args = append(args, author)
+	}
+	if assignee := strings.TrimSpace(options.Assignee); assignee != "" {
+		where = append(where, `exists (
+			select 1
+			from json_each(case when json_valid(t.assignees_json) then t.assignees_json else '[]' end) a
+			where lower(case when json_valid(a.value) then coalesce(json_extract(a.value, '$.login'), a.value) else a.value end) = lower(?)
+		)`)
+		args = append(args, assignee)
+	}
+	for _, label := range options.Labels {
+		if label = strings.TrimSpace(label); label == "" {
+			continue
+		}
+		where = append(where, `exists (
+			select 1
+			from json_each(case when json_valid(t.labels_json) then t.labels_json else '[]' end) l
+			where lower(case when json_valid(l.value) then coalesce(json_extract(l.value, '$.name'), l.value) else l.value end) = lower(?)
+		)`)
+		args = append(args, label)
 	}
 	if !options.IncludeLocallyClosed {
 		where = append(where, `t.closed_at_local is null`)

@@ -73,6 +73,52 @@ func TestSearchDocumentsEscapesFTSQuery(t *testing.T) {
 	}
 }
 
+func TestSearchThreadsFiltersAuthorAssigneeAndLabels(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	repoID, err := st.UpsertRepository(ctx, Repository{Owner: "openclaw", Name: "gitcrawl", FullName: "openclaw/gitcrawl", RawJSON: "{}", UpdatedAt: "2026-04-26T00:00:00Z"})
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+	threads := []Thread{
+		{
+			RepoID: repoID, GitHubID: "3", Number: 3, Kind: "issue", State: "open",
+			Title: "cache bug", AuthorLogin: "alice", HTMLURL: "https://github.com/openclaw/gitcrawl/issues/3",
+			LabelsJSON: `[{"name":"bug"},{"name":"cache"}]`, AssigneesJSON: `[{"login":"peter"}]`, RawJSON: "{}", ContentHash: "hash-3", UpdatedAt: "2026-04-26T03:00:00Z",
+		},
+		{
+			RepoID: repoID, GitHubID: "4", Number: 4, Kind: "issue", State: "open",
+			Title: "ui bug", AuthorLogin: "bob", HTMLURL: "https://github.com/openclaw/gitcrawl/issues/4",
+			LabelsJSON: `["bug"]`, AssigneesJSON: `["alice"]`, RawJSON: "{}", ContentHash: "hash-4", UpdatedAt: "2026-04-26T04:00:00Z",
+		},
+	}
+	for _, thread := range threads {
+		if _, err := st.UpsertThread(ctx, thread); err != nil {
+			t.Fatalf("thread %d: %v", thread.Number, err)
+		}
+	}
+
+	rows, err := st.SearchThreads(ctx, ThreadSearchOptions{RepoID: repoID, Kind: "issue", State: "open", Author: "alice", Assignee: "peter", Labels: []string{"cache"}, Limit: 10})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Number != 3 {
+		t.Fatalf("rows = %#v", rows)
+	}
+	rows, err = st.SearchThreads(ctx, ThreadSearchOptions{RepoID: repoID, Kind: "issue", State: "open", Assignee: "alice", Labels: []string{"bug"}, Limit: 10})
+	if err != nil {
+		t.Fatalf("search string arrays: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Number != 4 {
+		t.Fatalf("string-array rows = %#v", rows)
+	}
+}
+
 func TestSearchThreadsSupportsPortableSchema(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "portable.sync.db")

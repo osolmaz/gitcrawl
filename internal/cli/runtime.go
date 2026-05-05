@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -22,6 +23,8 @@ type localRuntime struct {
 }
 
 const portableStoreRefreshTimeout = 15 * time.Second
+const portableStoreRefreshTTL = 2 * time.Minute
+const portableStoreRefreshFailureBackoff = time.Minute
 
 func (a *App) openLocalRuntime(ctx context.Context) (localRuntime, error) {
 	cfg, err := config.Load(a.configPath)
@@ -129,7 +132,7 @@ func refreshPortableRuntimeDB(ctx context.Context, sourceDBPath, mirrorPath stri
 	portableRuntimeMu.Lock()
 	defer portableRuntimeMu.Unlock()
 	if refresh {
-		_ = refreshPortableStoreForDB(ctx, sourceDBPath)
+		_ = refreshPortableStoreForDBIfDue(ctx, sourceDBPath, mirrorPath)
 	}
 	needsCopy, err := portableRuntimeNeedsCopy(sourceDBPath, mirrorPath)
 	if err != nil {
@@ -142,6 +145,99 @@ func refreshPortableRuntimeDB(ctx context.Context, sourceDBPath, mirrorPath stri
 		return false, err
 	}
 	return true, nil
+}
+
+type portableStoreRefreshState struct {
+	LastAttempt string `json:"last_attempt,omitempty"`
+	LastSuccess string `json:"last_success,omitempty"`
+	LastFailure string `json:"last_failure,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+func refreshPortableStoreForDBIfDue(ctx context.Context, sourceDBPath, mirrorPath string) error {
+	ttl := portableStoreRefreshInterval()
+	statePath := portableStoreRefreshStatePath(mirrorPath)
+	state := readPortableStoreRefreshState(statePath)
+	now := time.Now().UTC()
+	if ttl > 0 && recentPortableRefresh(state.LastSuccess, now, ttl) {
+		return nil
+	}
+	if ttl > 0 && recentPortableRefresh(state.LastFailure, now, portableStoreRefreshFailureBackoff) {
+		return nil
+	}
+	lockPath := statePath + ".lock"
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		return err
+	}
+	lock, locked := tryGHCommandCacheLock(lockPath)
+	if !locked {
+		return nil
+	}
+	defer func() {
+		_ = lock.Close()
+		_ = os.Remove(lockPath)
+	}()
+	state = readPortableStoreRefreshState(statePath)
+	now = time.Now().UTC()
+	if ttl > 0 && recentPortableRefresh(state.LastSuccess, now, ttl) {
+		return nil
+	}
+	state.LastAttempt = now.Format(time.RFC3339Nano)
+	err := refreshPortableStoreForDB(ctx, sourceDBPath)
+	if err != nil {
+		state.LastFailure = time.Now().UTC().Format(time.RFC3339Nano)
+		state.Error = err.Error()
+		_ = writePortableStoreRefreshState(statePath, state)
+		return err
+	}
+	state.LastSuccess = time.Now().UTC().Format(time.RFC3339Nano)
+	state.LastFailure = ""
+	state.Error = ""
+	return writePortableStoreRefreshState(statePath, state)
+}
+
+func portableStoreRefreshInterval() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("GITCRAWL_PORTABLE_REFRESH_TTL")); raw != "" {
+		if duration, err := time.ParseDuration(raw); err == nil && duration >= 0 {
+			return duration
+		}
+	}
+	return portableStoreRefreshTTL
+}
+
+func portableStoreRefreshStatePath(mirrorPath string) string {
+	return filepath.Join(filepath.Dir(mirrorPath), ".portable-refresh.json")
+}
+
+func readPortableStoreRefreshState(path string) portableStoreRefreshState {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return portableStoreRefreshState{}
+	}
+	var state portableStoreRefreshState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return portableStoreRefreshState{}
+	}
+	return state
+}
+
+func writePortableStoreRefreshState(path string, state portableStoreRefreshState) error {
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return writeAtomicFile(path, data, 0o600)
+}
+
+func recentPortableRefresh(value string, now time.Time, maxAge time.Duration) bool {
+	if strings.TrimSpace(value) == "" {
+		return false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return false
+	}
+	return now.Sub(parsed) <= maxAge
 }
 
 func portableRuntimeNeedsCopy(sourceDBPath, mirrorPath string) (bool, error) {

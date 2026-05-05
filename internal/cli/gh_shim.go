@@ -32,6 +32,7 @@ func (a *App) runGHShim(ctx context.Context, args []string) error {
 				}
 				return err
 			}
+			_ = a.incrementGHXCacheCounter("local_hits")
 			return nil
 		}
 	case "issue", "pr":
@@ -44,6 +45,7 @@ func (a *App) runGHShim(ctx context.Context, args []string) error {
 					}
 					return err
 				}
+				_ = a.incrementGHXCacheCounter("local_hits")
 				return nil
 			case "list":
 				if err := a.runGHThreadList(ctx, args[0], args[2:]); err != nil {
@@ -52,6 +54,7 @@ func (a *App) runGHShim(ctx context.Context, args []string) error {
 					}
 					return err
 				}
+				_ = a.incrementGHXCacheCounter("local_hits")
 				return nil
 			}
 		}
@@ -113,9 +116,10 @@ func (a *App) runGHThreadList(ctx context.Context, resource string, args []strin
 	jsonFieldsRaw := fs.String("json", "", "comma-separated JSON fields")
 	jqRaw := fs.String("jq", "", "jq filter")
 	searchRaw := fs.String("search", "", "local search query")
-	authorRaw := fs.String("author", "", "fall through to gh when set")
-	assigneeRaw := fs.String("assignee", "", "fall through to gh when set")
-	labelRaw := fs.String("label", "", "fall through to gh when set")
+	authorRaw := fs.String("author", "", "filter by author")
+	assigneeRaw := fs.String("assignee", "", "filter by assignee")
+	var labels stringListFlag
+	fs.Var(&labels, "label", "filter by label")
 	if err := fs.Parse(normalizeCommandArgs(args, map[string]bool{
 		"R": true, "repo": true, "state": true, "limit": true, "L": true, "json": true, "jq": true,
 		"search": true, "author": true, "assignee": true, "label": true,
@@ -124,9 +128,6 @@ func (a *App) runGHThreadList(ctx context.Context, resource string, args []strin
 	}
 	if fs.NArg() != 0 {
 		return usageErr(fmt.Errorf("unexpected gh %s list arguments: %s", resource, strings.Join(fs.Args(), " ")))
-	}
-	if strings.TrimSpace(*authorRaw) != "" || strings.TrimSpace(*assigneeRaw) != "" || strings.TrimSpace(*labelRaw) != "" {
-		return localGHUnsupported(fmt.Errorf("list filters author/assignee/label are not local yet"))
 	}
 	if err := validateGHSearchState(strings.TrimSpace(*stateRaw)); err != nil {
 		return usageErr(err)
@@ -139,7 +140,16 @@ func (a *App) runGHThreadList(ctx context.Context, resource string, args []strin
 	if err != nil {
 		return localGHUnsupported(err)
 	}
-	threads, err := a.localGHThreads(ctx, repoValue, ghResourceKind(resource), strings.TrimSpace(*stateRaw), strings.TrimSpace(*searchRaw), limit)
+	threads, err := a.localGHThreads(ctx, ghThreadListRequest{
+		Repo:     repoValue,
+		Kind:     ghResourceKind(resource),
+		State:    strings.TrimSpace(*stateRaw),
+		Query:    strings.TrimSpace(*searchRaw),
+		Author:   strings.TrimSpace(*authorRaw),
+		Assignee: strings.TrimSpace(*assigneeRaw),
+		Labels:   labels.Values(),
+		Limit:    limit,
+	})
 	if err != nil {
 		return err
 	}
@@ -192,8 +202,19 @@ func (a *App) localGHThread(ctx context.Context, repoValue, kind string, number 
 	return store.Thread{}, localGHUnsupported(fmt.Errorf("thread #%d was not found in local cache", number))
 }
 
-func (a *App) localGHThreads(ctx context.Context, repoValue, kind, state, query string, limit int) ([]store.Thread, error) {
-	owner, repoName, err := parseOwnerRepo(repoValue)
+type ghThreadListRequest struct {
+	Repo     string
+	Kind     string
+	State    string
+	Query    string
+	Author   string
+	Assignee string
+	Labels   []string
+	Limit    int
+}
+
+func (a *App) localGHThreads(ctx context.Context, req ghThreadListRequest) ([]store.Thread, error) {
+	owner, repoName, err := parseOwnerRepo(req.Repo)
 	if err != nil {
 		return nil, err
 	}
@@ -208,11 +229,14 @@ func (a *App) localGHThreads(ctx context.Context, repoValue, kind, state, query 
 	}
 	return rt.Store.SearchThreads(ctx, store.ThreadSearchOptions{
 		RepoID:               repo.ID,
-		Query:                query,
-		Kind:                 kind,
-		State:                state,
+		Query:                req.Query,
+		Kind:                 req.Kind,
+		State:                req.State,
+		Author:               req.Author,
+		Assignee:             req.Assignee,
+		Labels:               req.Labels,
 		IncludeLocallyClosed: true,
-		Limit:                limit,
+		Limit:                req.Limit,
 	})
 }
 
@@ -319,4 +343,25 @@ func localGHUnsupported(err error) error {
 
 func isLocalGHUnsupported(err error) bool {
 	return errors.Is(err, errLocalGHUnsupported) || strings.Contains(err.Error(), "unsupported --json field")
+}
+
+type stringListFlag []string
+
+func (f *stringListFlag) String() string {
+	return strings.Join(*f, ",")
+}
+
+func (f *stringListFlag) Set(value string) error {
+	*f = append(*f, strings.TrimSpace(value))
+	return nil
+}
+
+func (f *stringListFlag) Values() []string {
+	values := make([]string, 0, len(*f))
+	for _, value := range *f {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			values = append(values, trimmed)
+		}
+	}
+	return values
 }
