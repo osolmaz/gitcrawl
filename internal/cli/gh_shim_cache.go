@@ -268,7 +268,7 @@ func (a *App) ghCommandCacheKey(ctx context.Context, args []string) string {
 		config.ResolvePath(a.configPath),
 		ghCommandCacheScope(args),
 		os.Getenv("GH_HOST"),
-		os.Getenv("GH_REPO"),
+		ghCommandCacheRepoEnv(args),
 		a.ghCommandStableIdentity(ctx, args),
 		strings.Join(args, "\x00"),
 	}, "\x00")
@@ -277,21 +277,31 @@ func (a *App) ghCommandCacheKey(ctx context.Context, args []string) string {
 }
 
 func ghCommandCacheScope(args []string) string {
-	if ghCommandHasExplicitIdentity(args) {
+	if ghCommandHasOwnExplicitIdentity(args) {
 		return "explicit"
+	}
+	if os.Getenv("GH_REPO") != "" {
+		return "env-repo"
 	}
 	cwd, _ := os.Getwd()
 	return "cwd:" + cwd
 }
 
-func ghCommandHasExplicitIdentity(args []string) bool {
+func ghCommandCacheRepoEnv(args []string) string {
+	if ghCommandHasOwnExplicitIdentity(args) {
+		return ""
+	}
+	return os.Getenv("GH_REPO")
+}
+
+func ghCommandHasOwnExplicitIdentity(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
 	if args[0] == "api" {
 		return ghAPIPathArg(args[1:]) != ""
 	}
-	if os.Getenv("GH_REPO") != "" || hasGHExplicitRepoFlag(args) {
+	if hasGHExplicitRepoFlag(args) {
 		return true
 	}
 	if len(args) >= 3 && args[0] == "repo" && args[1] == "view" {

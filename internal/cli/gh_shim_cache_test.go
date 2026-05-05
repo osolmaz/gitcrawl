@@ -214,6 +214,57 @@ func TestGHShimExplicitCacheKeysAreCwdIndependent(t *testing.T) {
 	if implicitSecond := a.ghCommandCacheKey(ctx, []string{"repo", "view", "--json", "nameWithOwner"}); implicitSecond == implicitFirst {
 		t.Fatalf("implicit repo key did not include cwd")
 	}
+
+	if err := os.Setenv("GH_REPO", "openclaw/other"); err != nil {
+		t.Fatalf("set GH_REPO: %v", err)
+	}
+	if apiWithEnv := a.ghCommandCacheKey(ctx, []string{"api", "users/octocat"}); apiWithEnv != apiFirst {
+		t.Fatalf("explicit api key changed across GH_REPO: %s != %s", apiWithEnv, apiFirst)
+	}
+	if repoWithEnv := a.ghCommandCacheKey(ctx, []string{"repo", "view", "openclaw/gitcrawl", "--json", "nameWithOwner"}); repoWithEnv != repoFirst {
+		t.Fatalf("explicit repo key changed across GH_REPO: %s != %s", repoWithEnv, repoFirst)
+	}
+	if runWithEnv := a.ghCommandCacheKey(ctx, []string{"run", "view", "123", "-R", "openclaw/gitcrawl", "--json", "status"}); runWithEnv != runFirst {
+		t.Fatalf("explicit -R key changed across GH_REPO: %s != %s", runWithEnv, runFirst)
+	}
+}
+
+func TestGHShimGHRepoScopedCacheKeysAreCwdIndependent(t *testing.T) {
+	ctx := context.Background()
+	configPath := seedGHShimRepo(t, ctx)
+	a := New()
+	a.configPath = configPath
+	t.Setenv("GH_HOST", "")
+	t.Setenv("GH_REPO", "")
+
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	defer func() { _ = os.Chdir(original) }()
+
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir first: %v", err)
+	}
+	if err := os.Setenv("GH_REPO", "openclaw/one"); err != nil {
+		t.Fatalf("set GH_REPO one: %v", err)
+	}
+	first := a.ghCommandCacheKey(ctx, []string{"repo", "view", "--json", "nameWithOwner"})
+
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir second: %v", err)
+	}
+	second := a.ghCommandCacheKey(ctx, []string{"repo", "view", "--json", "nameWithOwner"})
+	if second != first {
+		t.Fatalf("GH_REPO-scoped key changed across cwd: %s != %s", second, first)
+	}
+
+	if err := os.Setenv("GH_REPO", "openclaw/two"); err != nil {
+		t.Fatalf("set GH_REPO two: %v", err)
+	}
+	if otherRepo := a.ghCommandCacheKey(ctx, []string{"repo", "view", "--json", "nameWithOwner"}); otherRepo == first {
+		t.Fatalf("GH_REPO-scoped key ignored GH_REPO change")
+	}
 }
 
 func TestGHShimTracksBackendMissesByCommandAndRoute(t *testing.T) {
