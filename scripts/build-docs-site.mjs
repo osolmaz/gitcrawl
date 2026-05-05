@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { css, faviconSvg, js } from "./docs-site-assets.mjs";
+import { css, faviconSvg, js, themeInitJs, themeToggleHtml } from "./docs-site-assets.mjs";
 
 const root = process.cwd();
 const docsDir = path.join(root, "docs");
@@ -398,6 +398,7 @@ function layout({ page, html, toc, prev, next, sectionName }) {
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>${css()}</style>
+  <script>${themeInitJs()}</script>
 </head>
 <body${isHome ? ' class="home"' : ""}>
   <button class="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false">
@@ -405,10 +406,16 @@ function layout({ page, html, toc, prev, next, sectionName }) {
   </button>
   <div class="shell">
     <aside class="sidebar">
-      <a class="brand" href="${hrefToOutRel("index.html", page.outRel)}" aria-label="gitcrawl docs home">
-        <img src="${rootPrefix}favicon.svg" alt="">
-        <span><strong>gitcrawl</strong><small>Local-first GitHub triage</small></span>
-      </a>
+      <div class="sidebar-head">
+        <a class="brand" href="${hrefToOutRel("index.html", page.outRel)}" aria-label="gitcrawl docs home">
+          <img src="${rootPrefix}favicon.svg" alt="">
+          <span class="brand-text">
+            <strong class="brand-name">gitcrawl<span class="brand-tag">main</span></strong>
+            <small>Local-first GitHub triage</small>
+          </span>
+        </a>
+        ${themeToggleHtml()}
+      </div>
       <label class="search"><span>Search</span><input id="doc-search" type="search" placeholder="sync, cluster, gh shim"></label>
       <nav>${navHtml(page)}</nav>
     </aside>
