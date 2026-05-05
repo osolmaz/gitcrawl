@@ -74,7 +74,7 @@ The TUI starts at `--min-size 5` and `--sort size`, like ghcrawl's saved default
 Install from Homebrew:
 
 ```bash
-brew install steipete/tap/gitcrawl
+brew install openclaw/tap/gitcrawl
 ```
 
 Or download a release archive from GitHub releases or build from source:

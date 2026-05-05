@@ -23,7 +23,7 @@ gitcrawl runs on macOS and Linux. Windows is not actively tested.
 ## Install from Homebrew
 
 ```bash
-brew install steipete/tap/gitcrawl
+brew install openclaw/tap/gitcrawl
 ```
 
 Homebrew installs the `gitcrawl` binary. If you also want the GitHub CLI shim behavior, add a `gh` or `gitcrawl-gh` symlink as shown below.
