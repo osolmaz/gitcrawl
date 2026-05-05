@@ -347,6 +347,12 @@ func ghCompletedRunCacheTTL(entry ghCommandCacheEntry) time.Duration {
 	}
 	if entry.Args[0] == "api" {
 		route := normalizeGHAPIRoute(entry.Args[1:])
+		if strings.Contains(route, "/actions/runs/:id/jobs") && ghJSONJobsCompleted(entry.Stdout) {
+			return 12 * time.Hour
+		}
+		if strings.Contains(route, "/actions/jobs/:id") && ghJSONStatusCompleted(entry.Stdout) {
+			return 12 * time.Hour
+		}
 		if strings.Contains(route, "/actions/runs/:id") && ghJSONStatusCompleted(entry.Stdout) {
 			return 12 * time.Hour
 		}
@@ -355,6 +361,16 @@ func ghCompletedRunCacheTTL(entry ghCommandCacheEntry) time.Duration {
 		}
 	}
 	return 0
+}
+
+func ghJSONJobsCompleted(raw string) bool {
+	var payload struct {
+		Jobs []map[string]any `json:"jobs"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err == nil {
+		return len(payload.Jobs) > 0 && allGHStatusMapsCompleted(payload.Jobs)
+	}
+	return ghJSONCollectionCompleted(raw)
 }
 
 func ghJSONStatusCompleted(raw string) bool {

@@ -13,16 +13,18 @@ import (
 )
 
 type ghCommandCacheStats struct {
-	CacheDir       string                         `json:"cache_dir"`
-	Entries        int                            `json:"entries"`
-	Expired        int                            `json:"expired"`
-	Locks          int                            `json:"locks"`
-	Bytes          int64                          `json:"bytes"`
-	CacheHits      int64                          `json:"cache_hits"`
-	TotalReads     int64                          `json:"total_reads"`
-	HitRatePercent float64                        `json:"hit_rate_percent"`
-	Counters       ghXCacheCounters               `json:"counters"`
-	Commands       map[string]ghCommandCacheCount `json:"commands"`
+	CacheDir           string                         `json:"cache_dir"`
+	Entries            int                            `json:"entries"`
+	Expired            int                            `json:"expired"`
+	Locks              int                            `json:"locks"`
+	Bytes              int64                          `json:"bytes"`
+	Since              string                         `json:"since,omitempty"`
+	CacheHits          int64                          `json:"cache_hits"`
+	TotalReads         int64                          `json:"total_reads"`
+	HitRatePercent     float64                        `json:"hit_rate_percent"`
+	Counters           ghXCacheCounters               `json:"counters"`
+	CumulativeCounters *ghXCacheCounters              `json:"cumulative_counters,omitempty"`
+	Commands           map[string]ghCommandCacheCount `json:"commands"`
 }
 
 type ghCommandCacheCount struct {
@@ -43,18 +45,28 @@ type ghCommandCacheKeyInfo struct {
 
 func (a *App) runGHXCache(args []string) error {
 	if len(args) == 0 {
-		return usageErr(fmt.Errorf("usage: gh xcache <stats|keys|gc|flush|reset>"))
+		return usageErr(fmt.Errorf("usage: gh xcache <stats|keys|gc|flush|reset|snapshot>"))
 	}
 	fs := flag.NewFlagSet("xcache "+args[0], flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	jsonOut := fs.Bool("json", false, "write JSON output")
+	sinceRaw := fs.String("since", "", "show stats for the recent duration (stats only)")
+	resetAfterSnapshot := fs.Bool("reset", false, "reset counters after writing a snapshot (snapshot only)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return usageErr(err)
 	}
 	a.applyCommandJSON(*jsonOut)
 	switch args[0] {
 	case "stats":
-		return a.runGHXCacheStats()
+		var since time.Duration
+		if strings.TrimSpace(*sinceRaw) != "" {
+			parsed, err := time.ParseDuration(strings.TrimSpace(*sinceRaw))
+			if err != nil || parsed <= 0 {
+				return usageErr(fmt.Errorf("invalid --since duration %q", *sinceRaw))
+			}
+			since = parsed
+		}
+		return a.runGHXCacheStats(since)
 	case "keys":
 		return a.runGHXCacheKeys()
 	case "gc":
@@ -63,13 +75,15 @@ func (a *App) runGHXCache(args []string) error {
 		return a.runGHXCacheFlush()
 	case "reset":
 		return a.runGHXCacheReset()
+	case "snapshot":
+		return a.runGHXCacheSnapshot(*resetAfterSnapshot)
 	default:
 		return usageErr(fmt.Errorf("unknown xcache command %q", args[0]))
 	}
 }
 
-func (a *App) runGHXCacheStats() error {
-	stats, err := a.ghCommandCacheStats()
+func (a *App) runGHXCacheStats(since time.Duration) error {
+	stats, err := a.ghCommandCacheStats(since)
 	if err != nil {
 		return err
 	}
@@ -87,11 +101,15 @@ func (a *App) runGHXCacheStats() error {
 			_, _ = fmt.Fprintf(a.Stdout, "  %-16s %d entries / %d bytes\n", command, count.Entries, count.Bytes)
 		}
 	}
+	if stats.Since != "" {
+		_, _ = fmt.Fprintf(a.Stdout, "\nSince: %s\n", stats.Since)
+	}
 	_, _ = fmt.Fprintf(a.Stdout, "\nCounters:\n  local hits:          %d\n  fallback hits:       %d\n  stale hits:          %d\n  backend misses:      %d\n  pass-through writes: %d\n  hit rate:            %.1f%% (%d/%d reads)\n",
 		stats.Counters.LocalHits, stats.Counters.FallbackHits, stats.Counters.StaleHits, stats.Counters.BackendMisses, stats.Counters.PassThroughWrites,
 		stats.HitRatePercent, stats.CacheHits, stats.TotalReads)
 	printGHXCacheMisses(a.Stdout, "Backend Misses by Command", stats.Counters.BackendMissesByCommand)
 	printGHXCacheMisses(a.Stdout, "Backend Misses by Route", stats.Counters.BackendMissesByRoute)
+	printGHXCacheMisses(a.Stdout, "Backend Misses by Key", stats.Counters.BackendMissesByKey)
 	return nil
 }
 
@@ -161,6 +179,48 @@ func (a *App) runGHXCacheReset() error {
 	return err
 }
 
+type ghCommandCacheSnapshotResult struct {
+	SnapshotPath string `json:"snapshot_path"`
+	Reset        bool   `json:"reset"`
+}
+
+func (a *App) runGHXCacheSnapshot(reset bool) error {
+	stats, err := a.ghCommandCacheStats(0)
+	if err != nil {
+		return err
+	}
+	dir, err := a.ghCommandCacheDir()
+	if err != nil {
+		return err
+	}
+	snapshotDir := filepath.Join(dir, "_snapshots")
+	if err := os.MkdirAll(snapshotDir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(snapshotDir, time.Now().UTC().Format("20060102T150405Z")+".json")
+	data, err := json.MarshalIndent(stats, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := writeAtomicFile(path, data, 0o600); err != nil {
+		return err
+	}
+	if reset {
+		if err := a.resetGHXCacheCounters(); err != nil {
+			return err
+		}
+	}
+	result := ghCommandCacheSnapshotResult{SnapshotPath: path, Reset: reset}
+	if a.format == FormatJSON {
+		return a.writeJSONValue(result, "")
+	}
+	_, err = fmt.Fprintf(a.Stdout, "Wrote xcache snapshot: %s\n", path)
+	if err == nil && reset {
+		_, err = fmt.Fprintln(a.Stdout, "Reset xcache counters")
+	}
+	return err
+}
+
 type ghCommandCacheGCResult struct {
 	Removed      int `json:"removed"`
 	LocksRemoved int `json:"locks_removed"`
@@ -178,7 +238,7 @@ func (a *App) runGHXCacheGC() error {
 	return err
 }
 
-func (a *App) ghCommandCacheStats() (ghCommandCacheStats, error) {
+func (a *App) ghCommandCacheStats(since time.Duration) (ghCommandCacheStats, error) {
 	dir, err := a.ghCommandCacheDir()
 	if err != nil {
 		return ghCommandCacheStats{}, err
@@ -188,9 +248,15 @@ func (a *App) ghCommandCacheStats() (ghCommandCacheStats, error) {
 		return ghCommandCacheStats{}, err
 	}
 	counters, _ := a.ghXCacheCounters()
+	cumulative := counters
 	stats := ghCommandCacheStats{CacheDir: dir, Locks: locks, Counters: counters, Commands: map[string]ghCommandCacheCount{}}
-	stats.CacheHits = counters.LocalHits + counters.FallbackHits + counters.StaleHits
-	stats.TotalReads = stats.CacheHits + counters.BackendMisses
+	if since > 0 {
+		stats.Since = since.String()
+		stats.CumulativeCounters = &cumulative
+		stats.Counters = counters.since(since, time.Now())
+	}
+	stats.CacheHits = stats.Counters.LocalHits + stats.Counters.FallbackHits + stats.Counters.StaleHits
+	stats.TotalReads = stats.CacheHits + stats.Counters.BackendMisses
 	if stats.TotalReads > 0 {
 		stats.HitRatePercent = float64(stats.CacheHits) / float64(stats.TotalReads) * 100
 	}

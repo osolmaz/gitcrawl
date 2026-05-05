@@ -2,6 +2,8 @@
 
 ## 0.3.0 - Unreleased
 
+- Improve `gh` shim cache coordination and observability with stale-while-revalidate reads, finer Actions/API TTLs, recent-window stats, top miss keys, and `xcache snapshot`.
+
 ## 0.2.0 - 2026-05-05
 
 - Add Homebrew tap installation via `brew install openclaw/tap/gitcrawl`.

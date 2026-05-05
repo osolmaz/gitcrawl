@@ -101,9 +101,9 @@ These commands always run real `gh` but the response body is cached for the next
 
 Common Actions REST reads such as run status, job lists, and logs get Actions-aware TTLs.
 
-Default cache TTLs are command-aware: active `gh run list` and run-status reads use `2m`; completed run views are kept for `12h`; completed run lists are kept for `30m`; workflow, job detail, and Actions job-list reads use `5m`; search reads use `15m`; release metadata uses `30m`; GitHub user profile reads use `7d`; read-only GraphQL queries use `6h`; completed-style run/job log reads use `12h`; `gh pr diff` uses `5m` without a stable SHA and `7d` with one. Most other read-only fallthroughs use `5m` to `10m`. Override with `GITCRAWL_GH_CACHE_TTL=5m` or similar.
+Default cache TTLs are command-aware: active `gh run list` and run-status reads use `30s`; completed run views, completed Actions job lists, and run/job logs are kept for `12h`; completed run lists are kept for `30m`; workflow reads use `15m`; search reads use `15m`; release metadata uses `1h`; GitHub user profile reads use `7d`; read-only GraphQL queries use `6h`; GitHub Pages metadata uses `15m` to `30m`; tagged/SHA `contents` API reads use `7d`; `gh pr diff` uses `5m` without a stable SHA and `7d` with one. Most other read-only fallthroughs use `5m` to `10m`. Override with `GITCRAWL_GH_CACHE_TTL=5m` or similar.
 
-Repeat read failures are cached by default too. That avoids a fleet of agents all rediscovering the same missing release, workflow, secret, or unsupported field. Error entries are capped to shorter lifetimes, and rate-limit errors are capped at `2m` so a reset is not masked all day. If GitHub returns a rate-limit error while refreshing an expired successful entry, the shim serves that stale success with a warning instead of failing the read. Set `GITCRAWL_GH_CACHE_ERRORS=0` to cache successful reads only.
+Repeat read failures are cached by default too. That avoids a fleet of agents all rediscovering the same missing release, workflow, secret, or unsupported field. Error entries are capped to shorter lifetimes, and rate-limit errors are capped at `2m` so a reset is not masked all day. If GitHub returns a rate-limit error while refreshing an expired successful entry, the shim serves that stale success with a warning instead of failing the read. When another process is already refreshing an expired successful entry, peers can serve that stale entry within a short command-aware grace window instead of joining the backend stampede. Set `GITCRAWL_GH_STALE_GRACE=0` to disable stale-while-revalidate, or `GITCRAWL_GH_CACHE_ERRORS=0` to cache successful reads only.
 
 ## Auto-hydration
 
@@ -124,9 +124,10 @@ gitcrawl gh xcache keys         # per-entry detail
 gitcrawl gh xcache gc           # remove expired entries + stale lock files
 gitcrawl gh xcache flush        # clear everything
 gitcrawl gh xcache reset        # reset counters without deleting entries
+gitcrawl gh xcache snapshot     # write a counter snapshot for later comparison
 ```
 
-All accept `--json` for scripting.
+All accept `--json` for scripting. `stats` accepts `--since 1h` for recent-window counters. `snapshot` accepts `--reset` to checkpoint counters before a noisy release/debugging session.
 
 `stats` JSON:
 
@@ -152,6 +153,9 @@ All accept `--json` for scripting.
     },
     "backend_misses_by_route": {
       "api repos/:owner/:repo/actions/runs/:id/logs": 3
+    },
+    "backend_misses_by_key": {
+      "api repos/openclaw/gitcrawl/actions/runs/123/logs -i": 2
     }
   },
   "commands": {
@@ -161,7 +165,7 @@ All accept `--json` for scripting.
 }
 ```
 
-`local_hits` are answered from SQLite; `fallback_hits` are answered from the fallthrough cache; `stale_hits` are expired successful cache entries served after a backend rate-limit response; `backend_misses` actually hit GitHub. The per-command and per-route miss maps show which shapes still escape the cache, which is usually the fastest way to find the next optimization.
+`local_hits` are answered from SQLite; `fallback_hits` are answered from the fallthrough cache; `stale_hits` are expired successful cache entries served after a backend rate-limit response or while another process refreshes the key; `backend_misses` actually hit GitHub. The per-command, per-route, and per-key miss maps show which shapes still escape the cache, which is usually the fastest way to find the next optimization.
 
 ## Cache key composition
 

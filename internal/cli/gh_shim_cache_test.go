@@ -146,11 +146,11 @@ func TestGHShimCommandAwareCacheTTLs(t *testing.T) {
 	if got := ghCommandCacheTTL([]string{"run", "view", "123", "--log"}); got != 12*time.Hour {
 		t.Fatalf("run log ttl = %s, want 12h", got)
 	}
-	if got := ghCommandCacheTTL([]string{"run", "view", "123", "--job", "456"}); got != 5*time.Minute {
-		t.Fatalf("run job ttl = %s, want 5m", got)
+	if got := ghCommandCacheTTL([]string{"run", "view", "123", "--job", "456"}); got != time.Minute {
+		t.Fatalf("run job ttl = %s, want 1m", got)
 	}
-	if got := ghCommandCacheTTL([]string{"run", "list", "-R", "openclaw/openclaw"}); got != 2*time.Minute {
-		t.Fatalf("run list ttl = %s, want 2m", got)
+	if got := ghCommandCacheTTL([]string{"run", "list", "-R", "openclaw/openclaw"}); got != 30*time.Second {
+		t.Fatalf("run list ttl = %s, want 30s", got)
 	}
 	if got := ghCommandCacheTTL([]string{"search", "issues", "cache"}); got != 15*time.Minute {
 		t.Fatalf("search ttl = %s, want 15m", got)
@@ -158,14 +158,35 @@ func TestGHShimCommandAwareCacheTTLs(t *testing.T) {
 	if got := ghCommandCacheTTL([]string{"api", "-i", "repos/openclaw/openclaw/actions/runs/123/logs"}); got != 12*time.Hour {
 		t.Fatalf("actions log api ttl = %s, want 12h", got)
 	}
-	if got := ghCommandCacheTTL([]string{"api", "repos/openclaw/openclaw/actions/runs/123"}); got != 2*time.Minute {
-		t.Fatalf("actions run api ttl = %s, want 2m", got)
+	if got := ghCommandCacheTTL([]string{"api", "repos/openclaw/openclaw/actions/runs/123"}); got != 30*time.Second {
+		t.Fatalf("actions run api ttl = %s, want 30s", got)
+	}
+	if got := ghCommandCacheTTL([]string{"api", "repos/openclaw/openclaw/pages"}); got != 30*time.Minute {
+		t.Fatalf("pages api ttl = %s, want 30m", got)
+	}
+	if got := ghCommandCacheTTL([]string{"api", "repos/openclaw/openclaw/contents/README.md?ref=v0.2.0"}); got != 7*24*time.Hour {
+		t.Fatalf("tagged contents api ttl = %s, want 7d", got)
+	}
+	if got := ghCommandCacheTTL([]string{"api", "repos/openclaw/openclaw/contents/README.md?ref=refs%2Ftags%2Fv0.2.0"}); got != 7*24*time.Hour {
+		t.Fatalf("refs/tags contents api ttl = %s, want 7d", got)
+	}
+	if got := ghCommandCacheTTL([]string{"api", "repos/openclaw/openclaw/contents/README.md?ref=0123456789abcdef0123456789abcdef01234567"}); got != 7*24*time.Hour {
+		t.Fatalf("sha contents api ttl = %s, want 7d", got)
+	}
+	if got := ghCommandCacheTTL([]string{"api", "repos/openclaw/openclaw/contents/README.md?ref=vnext"}); got != 30*time.Minute {
+		t.Fatalf("mutable vnext contents api ttl = %s, want 30m", got)
+	}
+	if got := ghCommandCacheTTL([]string{"api", "repos/openclaw/openclaw/contents/README.md?ref=refs%2Fheads%2Fv0.2.0"}); got != 30*time.Minute {
+		t.Fatalf("v-prefixed branch contents api ttl = %s, want 30m", got)
 	}
 	if got := normalizeGHAPIRoute([]string{"repos/openclaw/openclaw/actions/runs?per_page=1"}); got != "api repos/:owner/:repo/actions/runs" {
 		t.Fatalf("normalized actions route = %q", got)
 	}
 	if got := normalizeGHAPIRoute([]string{"--paginate", "repos/openclaw/openclaw/issues?state=all&creator=octocat", "--jq", ".[].number"}); got != "api repos/:owner/:repo/issues" {
 		t.Fatalf("normalized paginated issues route = %q", got)
+	}
+	if got := normalizeGHAPIRoute([]string{"repos/openclaw/openclaw/contents/.github/workflows/ci.yml?ref=main"}); got != "api repos/:owner/:repo/contents/:path" {
+		t.Fatalf("normalized contents route = %q", got)
 	}
 	entry := ghCommandCacheEntry{CreatedAt: time.Now().Add(-3 * time.Minute), ExitCode: 1, Stderr: "HTTP 403: API rate limit exceeded"}
 	if ttl := ghCommandCacheEntryTTL(entry, 12*time.Hour); ttl != 2*time.Minute {
@@ -186,6 +207,14 @@ func TestGHShimCommandAwareCacheTTLs(t *testing.T) {
 	}
 	if ttl := ghCommandCacheEntryTTL(completedRuns, 2*time.Minute); ttl != 30*time.Minute {
 		t.Fatalf("completed run list ttl = %s, want 30m", ttl)
+	}
+	completedJobs := ghCommandCacheEntry{
+		Args:     []string{"api", "repos/openclaw/openclaw/actions/runs/123/jobs"},
+		ExitCode: 0,
+		Stdout:   `{"jobs":[{"status":"completed","conclusion":"success"}]}`,
+	}
+	if ttl := ghCommandCacheEntryTTL(completedJobs, time.Minute); ttl != 12*time.Hour {
+		t.Fatalf("completed jobs ttl = %s, want 12h", ttl)
 	}
 }
 
@@ -350,6 +379,66 @@ func TestGHShimTracksBackendMissesByCommandAndRoute(t *testing.T) {
 	if stats.Counters.BackendMissesByRoute["api repos/:owner/:repo/actions/runs/:id/logs"] != 1 {
 		t.Fatalf("backend misses by route = %#v", stats.Counters.BackendMissesByRoute)
 	}
+	if stats.Counters.BackendMissesByKey["api repos/openclaw/openclaw/actions/runs/123/logs -i"] != 1 {
+		t.Fatalf("backend misses by key = %#v", stats.Counters.BackendMissesByKey)
+	}
+}
+
+func TestGHShimXCacheStatsSinceAndSnapshot(t *testing.T) {
+	ctx := context.Background()
+	configPath := seedGHShimRepo(t, ctx)
+	dir := t.TempDir()
+	ghPath := filepath.Join(dir, "gh")
+	if err := os.WriteFile(ghPath, []byte("#!/bin/sh\necho repo:$*\n"), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("GITCRAWL_GH_PATH", ghPath)
+	t.Setenv("GH_REPO", "stats-since/"+filepath.Base(dir))
+	t.Setenv("GITCRAWL_GH_CACHE_TTL", "1m")
+
+	run := New()
+	var stdout bytes.Buffer
+	run.Stdout = &stdout
+	args := []string{"--config", configPath, "gh", "repo", "view", "openclaw/gitcrawl", "--json", "nameWithOwner"}
+	if err := run.Run(ctx, args); err != nil {
+		t.Fatalf("repo view: %v", err)
+	}
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "xcache", "stats", "--since", "1h", "--json"}); err != nil {
+		t.Fatalf("xcache stats --since: %v", err)
+	}
+	var stats ghCommandCacheStats
+	if err := json.Unmarshal(stdout.Bytes(), &stats); err != nil {
+		t.Fatalf("decode stats: %v\n%s", err, stdout.String())
+	}
+	if stats.Since != "1h0m0s" || stats.CumulativeCounters == nil || stats.Counters.BackendMisses != 1 {
+		t.Fatalf("since stats = %+v", stats)
+	}
+
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "xcache", "snapshot", "--reset", "--json"}); err != nil {
+		t.Fatalf("xcache snapshot: %v", err)
+	}
+	var snap ghCommandCacheSnapshotResult
+	if err := json.Unmarshal(stdout.Bytes(), &snap); err != nil {
+		t.Fatalf("decode snapshot: %v\n%s", err, stdout.String())
+	}
+	if snap.SnapshotPath == "" || !snap.Reset {
+		t.Fatalf("snapshot result = %+v", snap)
+	}
+	if _, err := os.Stat(snap.SnapshotPath); err != nil {
+		t.Fatalf("snapshot file: %v", err)
+	}
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "xcache", "stats", "--json"}); err != nil {
+		t.Fatalf("xcache stats after snapshot reset: %v", err)
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &stats); err != nil {
+		t.Fatalf("decode reset stats: %v\n%s", err, stdout.String())
+	}
+	if stats.Counters.BackendMisses != 0 {
+		t.Fatalf("snapshot reset counters = %+v", stats.Counters)
+	}
 }
 
 func TestGHShimCachesReadOnlyFallbackErrors(t *testing.T) {
@@ -463,6 +552,80 @@ exit 1
 	}
 	if stats.Counters.StaleHits != 1 || stats.Counters.BackendMisses != 2 || stats.CacheHits != 1 || stats.TotalReads != 3 {
 		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestGHShimServesStaleWhileAnotherProcessRefreshes(t *testing.T) {
+	ctx := context.Background()
+	configPath := seedGHShimRepo(t, ctx)
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "count")
+	ghPath := filepath.Join(dir, "gh")
+	script := `#!/bin/sh
+count=0
+if [ -f "$GH_SHIM_COUNT" ]; then
+  count=$(cat "$GH_SHIM_COUNT")
+fi
+count=$((count + 1))
+printf "%s" "$count" > "$GH_SHIM_COUNT"
+if [ "$count" != "1" ]; then
+  sleep 1
+fi
+echo "release-$count"
+`
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("GITCRAWL_GH_PATH", ghPath)
+	t.Setenv("GH_SHIM_COUNT", countPath)
+	t.Setenv("GITCRAWL_GH_CACHE_TTL", "1ns")
+	t.Setenv("GITCRAWL_GH_STALE_GRACE", "1h")
+
+	args := []string{"--config", configPath, "gh", "release", "view", "v1", "-R", "openclaw/openclaw"}
+	run := New()
+	var stdout bytes.Buffer
+	run.Stdout = &stdout
+	if err := run.Run(ctx, args); err != nil {
+		t.Fatalf("seed read: %v", err)
+	}
+	stdout.Reset()
+
+	var wg sync.WaitGroup
+	outputs := make(chan string, 2)
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			run := New()
+			var out bytes.Buffer
+			run.Stdout = &out
+			if err := run.Run(ctx, args); err != nil {
+				errs <- err
+				return
+			}
+			outputs <- strings.TrimSpace(out.String())
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	close(outputs)
+	for err := range errs {
+		t.Fatalf("stale while refresh run: %v", err)
+	}
+	seen := map[string]int{}
+	for out := range outputs {
+		seen[out]++
+	}
+	if seen["release-1"] != 1 || seen["release-2"] != 1 {
+		t.Fatalf("outputs = %#v, want one stale and one refresh", seen)
+	}
+	countData, err := os.ReadFile(countPath)
+	if err != nil {
+		t.Fatalf("read count: %v", err)
+	}
+	if strings.TrimSpace(string(countData)) != "2" {
+		t.Fatalf("fake gh call count = %q, want 2", countData)
 	}
 }
 

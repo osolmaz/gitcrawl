@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -189,7 +190,7 @@ func ghCommandCacheTTLBase(args []string, stablePRDiff bool) time.Duration {
 
 func ghRunCacheTTL(args []string) time.Duration {
 	if len(args) == 0 {
-		return 2 * time.Minute
+		return 30 * time.Second
 	}
 	switch args[0] {
 	case "view":
@@ -197,13 +198,13 @@ func ghRunCacheTTL(args []string) time.Duration {
 			return 12 * time.Hour
 		}
 		if hasAnyGHFlag(args[1:], "--job") {
-			return 5 * time.Minute
+			return 1 * time.Minute
 		}
-		return 2 * time.Minute
+		return 30 * time.Second
 	case "list":
-		return 2 * time.Minute
+		return 30 * time.Second
 	default:
-		return 2 * time.Minute
+		return 30 * time.Second
 	}
 }
 
@@ -214,25 +215,96 @@ func ghAPICacheTTL(args []string) time.Duration {
 		return 6 * time.Hour
 	case strings.HasPrefix(route, "api users/"):
 		return 7 * 24 * time.Hour
+	case strings.Contains(route, "/contents"):
+		if ghAPIContentRefIsStable(args) {
+			return 7 * 24 * time.Hour
+		}
+		return 30 * time.Minute
+	case strings.Contains(route, "/pages/builds/latest"):
+		return 2 * time.Minute
+	case strings.Contains(route, "/pages/health"):
+		return 15 * time.Minute
+	case strings.Contains(route, "/pages"):
+		return 30 * time.Minute
 	case strings.Contains(route, "/actions/runs/:id/logs"):
 		return 12 * time.Hour
 	case strings.Contains(route, "/actions/jobs/:id/logs"):
 		return 12 * time.Hour
 	case strings.Contains(route, "/actions/runs/:id/jobs"):
-		return 5 * time.Minute
+		return 1 * time.Minute
+	case strings.Contains(route, "/actions/jobs/:id"):
+		return 1 * time.Minute
+	case strings.Contains(route, "/pending_deployments"):
+		return 30 * time.Second
 	case strings.Contains(route, "/actions/runs/:id"):
-		return 2 * time.Minute
+		return 30 * time.Second
 	case strings.Contains(route, "/actions/workflows/"):
-		return 5 * time.Minute
+		return 15 * time.Minute
 	case strings.Contains(route, "/actions/runs"):
-		return 2 * time.Minute
+		return 30 * time.Second
 	case strings.Contains(route, "/releases"):
-		return 30 * time.Minute
+		return 1 * time.Hour
 	case strings.Contains(route, "/branches") || strings.Contains(route, "/commits"):
 		return 10 * time.Minute
 	default:
 		return 5 * time.Minute
 	}
+}
+
+func ghAPIContentRefIsStable(args []string) bool {
+	path := ghAPIPathArg(args)
+	_, rawQuery, found := strings.Cut(path, "?")
+	if !found {
+		return false
+	}
+	for _, part := range strings.Split(rawQuery, "&") {
+		name, value, ok := strings.Cut(part, "=")
+		if !ok || name != "ref" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if decoded, err := url.QueryUnescape(value); err == nil {
+			value = strings.TrimSpace(decoded)
+		}
+		if len(value) == 40 && isHexString(value) {
+			return true
+		}
+		if ghAPIContentRefIsStableReleaseTag(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func ghAPIContentRefIsStableReleaseTag(value string) bool {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "refs/heads/") {
+		return false
+	}
+	value = strings.TrimPrefix(value, "refs/tags/")
+	if strings.HasPrefix(value, "refs/") {
+		return false
+	}
+	if strings.HasPrefix(value, "v") {
+		value = strings.TrimPrefix(value, "v")
+	}
+	core := value
+	if before, _, found := strings.Cut(core, "+"); found {
+		core = before
+	}
+	if before, _, found := strings.Cut(core, "-"); found {
+		core = before
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if !isDecimalString(part) {
+			return false
+		}
+	}
+	return true
 }
 
 func isGHPRDiff(args []string) bool {
@@ -305,6 +377,14 @@ func normalizeGHAPIRoute(args []string) string {
 		if part == "" {
 			continue
 		}
+		if index >= 4 && len(parts) > 3 && parts[3] == "contents" {
+			parts = append(parts[:4], ":path")
+			break
+		}
+		if index >= 5 && len(parts) > 4 && parts[3] == "git" && parts[4] == "ref" {
+			parts = append(parts[:5], ":ref")
+			break
+		}
 		switch {
 		case isDecimalString(part):
 			parts[index] = ":id"
@@ -350,6 +430,18 @@ func isDecimalString(value string) bool {
 	}
 	for _, r := range value {
 		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexString(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
 			return false
 		}
 	}

@@ -104,17 +104,21 @@ Override the config root with `--config <path>` or `GITCRAWL_CONFIG`.
 | Cache class | TTL |
 | --- | --- |
 | Most read-only fallthroughs | `5m`-`10m` |
-| `gh run list` / run status | `2m` |
+| `gh run list` / run status | `30s` |
 | `gh run view --log` / `--log-failed` | `12h` |
-| `gh run view --job` | `5m` |
+| `gh run view --job` | `1m` |
 | `gh search ...` | `15m` |
-| `gh release ...` | `30m` |
-| `gh api` Actions run status | `2m` |
-| `gh api` Actions job lists / workflow reads | `5m` |
+| `gh release ...` | `1h` |
+| `gh api` Actions run status | `30s` |
+| `gh api` Actions job lists | `1m` active, `12h` completed |
+| `gh api` workflow reads | `15m` |
 | `gh api` Actions run/job logs | `12h` |
+| `gh api` Pages metadata | `15m`-`30m` |
+| `gh api` tagged/SHA contents | `7d` |
 | `gh pr diff` without stable head SHA | `5m` |
 | `gh pr diff` with stable head SHA | `7d` |
 | Override | `GITCRAWL_GH_CACHE_TTL` |
+| Stale-while-revalidate grace | command-aware; override with `GITCRAWL_GH_STALE_GRACE` |
 | Cache read failures | on by default; error TTL is capped (`2m` for rate-limit errors); disable with `GITCRAWL_GH_CACHE_ERRORS=0` |
 
 ## gh shim cache key composition

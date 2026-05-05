@@ -122,9 +122,10 @@ gitcrawl gh xcache stats
 gitcrawl gh xcache keys
 gitcrawl gh xcache reset
 gitcrawl gh xcache flush
+gitcrawl gh xcache snapshot [--reset]
 ```
 
-The cache key includes the resolved gitcrawl config path, current working directory, `GH_HOST`, `GH_REPO`, stable PR-diff identity when available, and canonicalized `gh` arguments. This keeps sibling checkouts and portable stores isolated while still coalescing equivalent agent calls such as reordered flags or sorted `--json` fields. Concurrent cache misses use a lock file so one process populates the entry while peers wait for the result.
+The cache key includes the resolved gitcrawl config path, current working directory, `GH_HOST`, `GH_REPO`, stable PR-diff identity when available, and canonicalized `gh` arguments. This keeps sibling checkouts and portable stores isolated while still coalescing equivalent agent calls such as reordered flags or sorted `--json` fields. Concurrent cache misses use a lock file so one process populates the entry while peers wait for the result; if an expired successful entry is still inside its stale grace window, peers may serve stale while the lock holder refreshes it. `xcache stats --since <duration>` reports recent-window counters from hourly buckets, and miss maps include command, normalized route, and canonical key views.
 
 ## Config
 

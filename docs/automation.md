@@ -122,6 +122,10 @@ gh issue comment 456 -R owner/repo --body "Duplicate of #123"
 # Periodically log cache stats — watch local_hits climb relative to backend_misses.
 gitcrawl gh xcache stats --json \
   | jq '{local: .counters.local_hits, fallback: .counters.fallback_hits, github: .counters.backend_misses}'
+
+# During release/debug sessions, compare a recent window or snapshot before reset.
+gitcrawl gh xcache stats --since 1h --json
+gitcrawl gh xcache snapshot --reset --json
 ```
 
 ## Multi-repo automation
