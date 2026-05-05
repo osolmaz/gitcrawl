@@ -22,13 +22,7 @@ A local-first GitHub triage tool **and** a drop-in caching `gh` shim. Sync issue
 `gitcrawl` mirrors a GitHub repository's issues and pull requests into local SQLite, then layers semantic clustering, full-text search, and a `gh`-compatible shim on top — so a maintainer (or an agent acting on their behalf) can triage threads *and* serve everyday `gh` reads without burning live API quota.
 
 - **Local SQLite first.** All issues, PRs, comments, reviews, files, commits, checks, and workflow runs land in `~/.config/gitcrawl/gitcrawl.db`. Queries hit the disk, not GitHub.
-- **Drop-in `gh` cache.** Symlink `gitcrawl-gh` as `gh` and most read-only calls (`gh search`, `gh issue/pr view`, `gh pr checks`, `gh run`, REST GETs, GraphQL queries) answer from local SQLite. Agents stop hitting rate limits; mutating commands pass through unchanged.
-
-  ```bash
-  ln -s "$(which gitcrawl-gh)" ~/bin/gh
-  gh xcache stats   # see hit rate, per-command misses, evictions
-  ```
-
+- **Drop-in `gh` cache.** Symlink `gitcrawl-gh` as `gh` and most read-only calls (`gh search`, `gh issue/pr view`, `gh pr checks`, `gh run`, REST GETs, GraphQL queries) answer from local SQLite. Agents stop hitting rate limits; mutating commands pass through unchanged. Run `gh xcache stats` to see hit rate, per-command misses, and evictions.
 - **Semantic clustering.** OpenAI embeddings group related reports, with deterministic GitHub reference evidence (`#123`, `pull/123`) preventing weak similarity bridges from forming mega-clusters.
 - **Terminal UI.** `gitcrawl tui` is a keyboard- and mouse-driven cluster browser with bidirectional sort, jump-to-number, neighbors, and member-level governance actions.
 - **Agent-friendly JSON.** Every command supports `--json` for clean automation surfaces.
