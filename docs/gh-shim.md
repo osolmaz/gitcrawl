@@ -166,12 +166,12 @@ Cache keys are deterministic SHA-256 hashes of:
 - The resolved gitcrawl config path
 - The current working directory when the command depends on implicit repo resolution
 - The `GH_HOST` env var
-- The `GH_REPO` env var
+- The `GH_REPO` env var when the command relies on it for implicit repo resolution
 - An explicit-scope marker for commands that include their own API path or repository
 - For `gh pr diff`: the stable identity `pr-diff:owner/repo:number:head-sha` (when available)
 - The full command argument vector, null-separated
 
-This isolates implicit repo reads in sibling checkouts while still coalescing explicit reads such as `gh api users/octocat`, `gh api repos/openclaw/openclaw/...`, and `gh repo view openclaw/gitcrawl` across those checkouts. Concurrent cache misses use a lock file so one process populates the entry while peers wait for the result, instead of all of them firing at GitHub.
+This isolates implicit repo reads in sibling checkouts while still coalescing explicit reads such as `gh api users/octocat`, `gh api repos/openclaw/openclaw/...`, and `gh repo view openclaw/gitcrawl` across those checkouts. Explicit reads ignore unrelated `GH_REPO` values so agents with different ambient repo settings still share cache entries when the command itself names the target. Concurrent cache misses use a lock file so one process populates the entry while peers wait for the result, instead of all of them firing at GitHub.
 
 ## What does not flow through the shim
 
