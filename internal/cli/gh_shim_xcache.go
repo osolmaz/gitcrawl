@@ -13,13 +13,16 @@ import (
 )
 
 type ghCommandCacheStats struct {
-	CacheDir string                         `json:"cache_dir"`
-	Entries  int                            `json:"entries"`
-	Expired  int                            `json:"expired"`
-	Locks    int                            `json:"locks"`
-	Bytes    int64                          `json:"bytes"`
-	Counters ghXCacheCounters               `json:"counters"`
-	Commands map[string]ghCommandCacheCount `json:"commands"`
+	CacheDir       string                         `json:"cache_dir"`
+	Entries        int                            `json:"entries"`
+	Expired        int                            `json:"expired"`
+	Locks          int                            `json:"locks"`
+	Bytes          int64                          `json:"bytes"`
+	CacheHits      int64                          `json:"cache_hits"`
+	TotalReads     int64                          `json:"total_reads"`
+	HitRatePercent float64                        `json:"hit_rate_percent"`
+	Counters       ghXCacheCounters               `json:"counters"`
+	Commands       map[string]ghCommandCacheCount `json:"commands"`
 }
 
 type ghCommandCacheCount struct {
@@ -33,13 +36,14 @@ type ghCommandCacheKeyInfo struct {
 	Age       string    `json:"age"`
 	Command   string    `json:"command"`
 	Args      []string  `json:"args"`
+	Tags      []string  `json:"tags,omitempty"`
 	Bytes     int64     `json:"bytes"`
 	Expired   bool      `json:"expired"`
 }
 
 func (a *App) runGHXCache(args []string) error {
 	if len(args) == 0 {
-		return usageErr(fmt.Errorf("usage: gh xcache <stats|keys|gc|flush>"))
+		return usageErr(fmt.Errorf("usage: gh xcache <stats|keys|gc|flush|reset>"))
 	}
 	fs := flag.NewFlagSet("xcache "+args[0], flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -57,6 +61,8 @@ func (a *App) runGHXCache(args []string) error {
 		return a.runGHXCacheGC()
 	case "flush":
 		return a.runGHXCacheFlush()
+	case "reset":
+		return a.runGHXCacheReset()
 	default:
 		return usageErr(fmt.Errorf("unknown xcache command %q", args[0]))
 	}
@@ -81,8 +87,9 @@ func (a *App) runGHXCacheStats() error {
 			_, _ = fmt.Fprintf(a.Stdout, "  %-16s %d entries / %d bytes\n", command, count.Entries, count.Bytes)
 		}
 	}
-	_, _ = fmt.Fprintf(a.Stdout, "\nCounters:\n  local hits:          %d\n  fallback hits:       %d\n  backend misses:      %d\n  pass-through writes: %d\n",
-		stats.Counters.LocalHits, stats.Counters.FallbackHits, stats.Counters.BackendMisses, stats.Counters.PassThroughWrites)
+	_, _ = fmt.Fprintf(a.Stdout, "\nCounters:\n  local hits:          %d\n  fallback hits:       %d\n  stale hits:          %d\n  backend misses:      %d\n  pass-through writes: %d\n  hit rate:            %.1f%% (%d/%d reads)\n",
+		stats.Counters.LocalHits, stats.Counters.FallbackHits, stats.Counters.StaleHits, stats.Counters.BackendMisses, stats.Counters.PassThroughWrites,
+		stats.HitRatePercent, stats.CacheHits, stats.TotalReads)
 	printGHXCacheMisses(a.Stdout, "Backend Misses by Command", stats.Counters.BackendMissesByCommand)
 	printGHXCacheMisses(a.Stdout, "Backend Misses by Route", stats.Counters.BackendMissesByRoute)
 	return nil
@@ -143,6 +150,17 @@ func (a *App) runGHXCacheFlush() error {
 	return err
 }
 
+func (a *App) runGHXCacheReset() error {
+	if err := a.resetGHXCacheCounters(); err != nil {
+		return err
+	}
+	if a.format == FormatJSON {
+		return a.writeJSONValue(map[string]any{"reset": true}, "")
+	}
+	_, err := fmt.Fprintln(a.Stdout, "Reset xcache counters")
+	return err
+}
+
 type ghCommandCacheGCResult struct {
 	Removed      int `json:"removed"`
 	LocksRemoved int `json:"locks_removed"`
@@ -171,6 +189,11 @@ func (a *App) ghCommandCacheStats() (ghCommandCacheStats, error) {
 	}
 	counters, _ := a.ghXCacheCounters()
 	stats := ghCommandCacheStats{CacheDir: dir, Locks: locks, Counters: counters, Commands: map[string]ghCommandCacheCount{}}
+	stats.CacheHits = counters.LocalHits + counters.FallbackHits + counters.StaleHits
+	stats.TotalReads = stats.CacheHits + counters.BackendMisses
+	if stats.TotalReads > 0 {
+		stats.HitRatePercent = float64(stats.CacheHits) / float64(stats.TotalReads) * 100
+	}
 	for _, key := range keys {
 		if key.Expired {
 			stats.Expired++
@@ -279,6 +302,7 @@ func ghCommandCacheKeyInfoFromDirEntry(dir string, entry os.DirEntry) (ghCommand
 		Age:       age.Round(time.Second).String(),
 		Command:   ghCommandName(cached.Args),
 		Args:      cached.Args,
+		Tags:      cached.Tags,
 		Bytes:     info.Size(),
 		Expired:   cached.CreatedAt.IsZero() || age > ghCommandCacheEntryTTL(cached, ttl),
 	}, true

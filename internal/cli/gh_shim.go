@@ -119,14 +119,14 @@ func (a *App) runGHThreadView(ctx context.Context, resource string, args []strin
 	}
 	thread, err := a.localGHThread(ctx, repoValue, ghResourceKind(resource), number)
 	if err != nil {
-		if resource == "pr" && a.shouldAutoHydrateGHPRDetails(err) {
+		if a.shouldAutoHydrateGHThread(err) {
 			owner, repoName, parseErr := parseOwnerRepo(repoValue)
 			if parseErr != nil {
 				return localGHUnsupported(parseErr)
 			}
 			if _, syncErr := a.syncRepository(ctx, owner, repoName, syncOptions{
 				Numbers:          []int{number},
-				IncludePRDetails: true,
+				IncludePRDetails: resource == "pr",
 			}); syncErr != nil {
 				return localGHUnsupported(syncErr)
 			}

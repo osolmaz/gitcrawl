@@ -76,6 +76,25 @@ echo "call-$count:$*"
 	if int(counters["backend_misses"].(float64)) != 1 || int(counters["fallback_hits"].(float64)) != 1 {
 		t.Fatalf("counters = %#v", counters)
 	}
+	if stats["hit_rate_percent"].(float64) != 50 {
+		t.Fatalf("hit rate = %#v", stats["hit_rate_percent"])
+	}
+
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "xcache", "reset", "--json"}); err != nil {
+		t.Fatalf("xcache reset: %v", err)
+	}
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "xcache", "stats", "--json"}); err != nil {
+		t.Fatalf("xcache stats after reset: %v", err)
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &stats); err != nil {
+		t.Fatalf("decode reset stats: %v\n%s", err, stdout.String())
+	}
+	counters = stats["counters"].(map[string]any)
+	if int(counters["backend_misses"].(float64)) != 0 || int(counters["fallback_hits"].(float64)) != 0 {
+		t.Fatalf("reset counters = %#v", counters)
+	}
 
 	stdout.Reset()
 	if err := run.Run(ctx, []string{"--config", configPath, "gh", "xcache", "keys", "--json"}); err != nil {
@@ -151,6 +170,37 @@ func TestGHShimCommandAwareCacheTTLs(t *testing.T) {
 	entry := ghCommandCacheEntry{CreatedAt: time.Now().Add(-3 * time.Minute), ExitCode: 1, Stderr: "HTTP 403: API rate limit exceeded"}
 	if ttl := ghCommandCacheEntryTTL(entry, 12*time.Hour); ttl != 2*time.Minute {
 		t.Fatalf("rate-limit error ttl = %s, want 2m", ttl)
+	}
+	completedRun := ghCommandCacheEntry{
+		Args:     []string{"run", "view", "123", "-R", "openclaw/openclaw", "--json", "status,conclusion"},
+		ExitCode: 0,
+		Stdout:   `{"status":"completed","conclusion":"success"}`,
+	}
+	if ttl := ghCommandCacheEntryTTL(completedRun, 2*time.Minute); ttl != 12*time.Hour {
+		t.Fatalf("completed run ttl = %s, want 12h", ttl)
+	}
+	completedRuns := ghCommandCacheEntry{
+		Args:     []string{"run", "list", "-R", "openclaw/openclaw", "--json", "status,conclusion"},
+		ExitCode: 0,
+		Stdout:   `[{"status":"completed","conclusion":"success"}]`,
+	}
+	if ttl := ghCommandCacheEntryTTL(completedRuns, 2*time.Minute); ttl != 30*time.Minute {
+		t.Fatalf("completed run list ttl = %s, want 30m", ttl)
+	}
+}
+
+func TestGHShimCanonicalizesEquivalentCacheKeys(t *testing.T) {
+	ctx := context.Background()
+	configPath := seedGHShimRepo(t, ctx)
+	a := New()
+	a.configPath = configPath
+	t.Setenv("GH_HOST", "")
+	t.Setenv("GH_REPO", "")
+
+	first := a.ghCommandCacheKey(ctx, []string{"run", "view", "123", "-R", "openclaw/openclaw", "--json", "status,conclusion"})
+	second := a.ghCommandCacheKey(ctx, []string{"run", "view", "123", "--json", "conclusion,status", "--repo", "openclaw/openclaw"})
+	if first != second {
+		t.Fatalf("equivalent command keys differ: %s != %s", first, second)
 	}
 }
 
@@ -348,7 +398,75 @@ exit 42
 	}
 }
 
-func TestGHShimMutatingFallbackClearsCacheForGHXStyleMutations(t *testing.T) {
+func TestGHShimServesExpiredSuccessOnRateLimit(t *testing.T) {
+	ctx := context.Background()
+	configPath := seedGHShimRepo(t, ctx)
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "count")
+	ghPath := filepath.Join(dir, "gh")
+	script := `#!/bin/sh
+count=0
+if [ -f "$GH_SHIM_COUNT" ]; then
+  count=$(cat "$GH_SHIM_COUNT")
+fi
+count=$((count + 1))
+printf "%s" "$count" > "$GH_SHIM_COUNT"
+if [ "$count" = "1" ]; then
+  echo "release-ok"
+  exit 0
+fi
+echo "HTTP 403: API rate limit exceeded" >&2
+exit 1
+`
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("GITCRAWL_GH_PATH", ghPath)
+	t.Setenv("GH_SHIM_COUNT", countPath)
+	t.Setenv("GITCRAWL_GH_CACHE_TTL", "1ns")
+
+	args := []string{"--config", configPath, "gh", "release", "view", "v1", "-R", "openclaw/openclaw"}
+	run := New()
+	var stdout, stderr bytes.Buffer
+	run.Stdout = &stdout
+	run.Stderr = &stderr
+	if err := run.Run(ctx, args); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := run.Run(ctx, args); err != nil {
+		t.Fatalf("stale read should succeed: %v", err)
+	}
+	if strings.TrimSpace(stdout.String()) != "release-ok" {
+		t.Fatalf("stale stdout = %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "serving stale cached gh response") {
+		t.Fatalf("stderr missing stale warning: %q", stderr.String())
+	}
+	countData, err := os.ReadFile(countPath)
+	if err != nil {
+		t.Fatalf("read count: %v", err)
+	}
+	if strings.TrimSpace(string(countData)) != "2" {
+		t.Fatalf("fake gh call count = %q, want 2", countData)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "xcache", "stats", "--json"}); err != nil {
+		t.Fatalf("xcache stats: %v", err)
+	}
+	var stats ghCommandCacheStats
+	if err := json.Unmarshal(stdout.Bytes(), &stats); err != nil {
+		t.Fatalf("decode stats: %v\n%s", err, stdout.String())
+	}
+	if stats.Counters.StaleHits != 1 || stats.Counters.BackendMisses != 2 || stats.CacheHits != 1 || stats.TotalReads != 3 {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestGHShimMutatingFallbackClearsMatchingCacheForGHXStyleMutations(t *testing.T) {
 	ctx := context.Background()
 	configPath := seedGHShimRepo(t, ctx)
 	dir := t.TempDir()
@@ -374,7 +492,7 @@ echo "call-$count:$*"
 	run := New()
 	var stdout bytes.Buffer
 	run.Stdout = &stdout
-	readArgs := []string{"--config", configPath, "gh", "release", "view", "v1", "-R", "openclaw/openclaw"}
+	readArgs := []string{"--config", configPath, "gh", "run", "view", "123", "-R", "openclaw/openclaw"}
 	if err := run.Run(ctx, readArgs); err != nil {
 		t.Fatalf("first read: %v", err)
 	}
@@ -396,6 +514,59 @@ echo "call-$count:$*"
 	}
 	if strings.TrimSpace(string(countData)) != "3" {
 		t.Fatalf("fake gh call count = %q, want 3", countData)
+	}
+}
+
+func TestGHShimMutatingFallbackInvalidatesTargetedTags(t *testing.T) {
+	ctx := context.Background()
+	configPath := seedGHShimRepo(t, ctx)
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "count")
+	ghPath := filepath.Join(dir, "gh")
+	script := `#!/bin/sh
+count=0
+if [ -f "$GH_SHIM_COUNT" ]; then
+  count=$(cat "$GH_SHIM_COUNT")
+fi
+count=$((count + 1))
+printf "%s" "$count" > "$GH_SHIM_COUNT"
+echo "call-$count:$*"
+`
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("GITCRAWL_GH_PATH", ghPath)
+	t.Setenv("GH_SHIM_COUNT", countPath)
+	t.Setenv("GITCRAWL_GH_CACHE_TTL", "1m")
+
+	run := New()
+	var stdout bytes.Buffer
+	run.Stdout = &stdout
+	releaseArgs := []string{"--config", configPath, "gh", "release", "view", "v1", "-R", "openclaw/openclaw"}
+	issueArgs := []string{"--config", configPath, "gh", "api", "repos/openclaw/openclaw/issues/12"}
+	for _, args := range [][]string{releaseArgs, issueArgs} {
+		stdout.Reset()
+		if err := run.Run(ctx, args); err != nil {
+			t.Fatalf("seed read %v: %v", args, err)
+		}
+	}
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "issue", "comment", "12", "-R", "openclaw/openclaw", "--body", "fixed"}); err != nil {
+		t.Fatalf("mutation: %v", err)
+	}
+	stdout.Reset()
+	if err := run.Run(ctx, releaseArgs); err != nil {
+		t.Fatalf("release should remain cached: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "call-1:") {
+		t.Fatalf("release cache was invalidated: %q", stdout.String())
+	}
+	stdout.Reset()
+	if err := run.Run(ctx, issueArgs); err != nil {
+		t.Fatalf("issue should be refetched: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "call-4:") {
+		t.Fatalf("issue cache was not invalidated: %q", stdout.String())
 	}
 }
 

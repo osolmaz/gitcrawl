@@ -51,6 +51,10 @@ func ghPRFieldsNeedFresh(fields []string) bool {
 }
 
 func (a *App) shouldAutoHydrateGHPRDetails(err error) bool {
+	return a.shouldAutoHydrateGHThread(err)
+}
+
+func (a *App) shouldAutoHydrateGHThread(err error) bool {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("GITCRAWL_GH_AUTO_HYDRATE")), "0") {
 		return false
 	}

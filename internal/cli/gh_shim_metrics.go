@@ -10,6 +10,7 @@ import (
 type ghXCacheCounters struct {
 	LocalHits              int64            `json:"local_hits"`
 	FallbackHits           int64            `json:"fallback_hits"`
+	StaleHits              int64            `json:"stale_hits"`
 	BackendMisses          int64            `json:"backend_misses"`
 	PassThroughWrites      int64            `json:"pass_through_writes"`
 	BackendMissesByCommand map[string]int64 `json:"backend_misses_by_command,omitempty"`
@@ -22,6 +23,14 @@ func (a *App) ghXCacheCounters() (ghXCacheCounters, error) {
 		return ghXCacheCounters{}, err
 	}
 	return readGHXCacheCounters(filepath.Join(dir, ghXCacheStatsFile)), nil
+}
+
+func (a *App) resetGHXCacheCounters() error {
+	dir, err := a.ghCommandCacheDir()
+	if err != nil {
+		return err
+	}
+	return writeAtomicFile(filepath.Join(dir, ghXCacheStatsFile), []byte("{}"), 0o600)
 }
 
 func (a *App) incrementGHXCacheCounter(name string) error {
@@ -53,6 +62,8 @@ func (a *App) incrementGHXCacheCounterWithArgs(name string, args []string) error
 		stats.LocalHits++
 	case "fallback_hits":
 		stats.FallbackHits++
+	case "stale_hits":
+		stats.StaleHits++
 	case "backend_misses":
 		stats.BackendMisses++
 		if len(args) > 0 {

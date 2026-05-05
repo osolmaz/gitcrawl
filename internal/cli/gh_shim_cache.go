@@ -23,7 +23,7 @@ func (a *App) execRealGHMaybeCached(ctx context.Context, args []string) error {
 		err := a.execRealGH(ctx, args)
 		if err == nil && mutatingGHCommand(args) {
 			_ = a.incrementGHXCacheCounter("pass_through_writes")
-			_ = a.clearGHCommandCache()
+			_ = a.clearGHCommandCacheForMutation(ctx, args)
 		}
 		return err
 	}
@@ -33,6 +33,7 @@ func (a *App) execRealGHMaybeCached(ctx context.Context, args []string) error {
 	}
 	ttl := a.ghCommandCacheTTL(ctx, args)
 	entryPath := filepath.Join(cacheDir, a.ghCommandCacheKey(ctx, args)+".json")
+	staleEntry, hasStaleEntry := readGHCommandCacheEntry(entryPath)
 	if entry, ok := readGHCommandCache(entryPath, ttl); ok {
 		_ = a.incrementGHXCacheCounter("fallback_hits")
 		return a.writeGHCommandCacheEntry(entry)
@@ -59,10 +60,16 @@ func (a *App) execRealGHMaybeCached(ctx context.Context, args []string) error {
 
 	stdout, stderr, exitCode, err := a.captureRealGH(ctx, args)
 	_ = a.incrementGHXCacheBackendMiss(args)
+	if err != nil && hasStaleEntry && staleEntry.ExitCode == 0 && ghCommandOutputLooksRateLimited(stdout, stderr) {
+		_ = a.incrementGHXCacheCounter("stale_hits")
+		_, _ = fmt.Fprintf(a.Stderr, "gitcrawl: GitHub rate limited; serving stale cached gh response from %s ago\n", time.Since(staleEntry.CreatedAt).Round(time.Second))
+		return a.writeGHCommandCacheEntry(staleEntry)
+	}
 	if err == nil || cacheGHReadErrors() {
 		_ = writeGHCommandCache(entryPath, ghCommandCacheEntry{
 			CreatedAt: time.Now().UTC(),
 			Args:      append([]string(nil), args...),
+			Tags:      a.ghCommandCacheTags(ctx, args),
 			ExitCode:  exitCode,
 			Stdout:    stdout,
 			Stderr:    stderr,
@@ -154,6 +161,7 @@ func isGHCommandCacheEntryFile(name string) bool {
 type ghCommandCacheEntry struct {
 	CreatedAt time.Time `json:"created_at"`
 	Args      []string  `json:"args"`
+	Tags      []string  `json:"tags,omitempty"`
 	ExitCode  int       `json:"exit_code"`
 	Stdout    string    `json:"stdout"`
 	Stderr    string    `json:"stderr"`
@@ -169,12 +177,8 @@ func (a *App) writeGHCommandCacheEntry(entry ghCommandCacheEntry) error {
 }
 
 func readGHCommandCache(path string, ttl time.Duration) (ghCommandCacheEntry, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ghCommandCacheEntry{}, false
-	}
-	var entry ghCommandCacheEntry
-	if err := json.Unmarshal(data, &entry); err != nil {
+	entry, ok := readGHCommandCacheEntry(path)
+	if !ok {
 		return ghCommandCacheEntry{}, false
 	}
 	if entry.CreatedAt.IsZero() || time.Since(entry.CreatedAt) > ghCommandCacheEntryTTL(entry, ttl) {
@@ -183,8 +187,23 @@ func readGHCommandCache(path string, ttl time.Duration) (ghCommandCacheEntry, bo
 	return entry, true
 }
 
+func readGHCommandCacheEntry(path string) (ghCommandCacheEntry, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ghCommandCacheEntry{}, false
+	}
+	var entry ghCommandCacheEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return ghCommandCacheEntry{}, false
+	}
+	return entry, true
+}
+
 func ghCommandCacheEntryTTL(entry ghCommandCacheEntry, ttl time.Duration) time.Duration {
 	if entry.ExitCode == 0 {
+		if completedTTL := ghCompletedRunCacheTTL(entry); completedTTL > ttl {
+			return completedTTL
+		}
 		return ttl
 	}
 	errorTTL := 5 * time.Minute
@@ -198,7 +217,11 @@ func ghCommandCacheEntryTTL(entry ghCommandCacheEntry, ttl time.Duration) time.D
 }
 
 func ghCommandCacheEntryLooksRateLimited(entry ghCommandCacheEntry) bool {
-	text := strings.ToLower(entry.Stdout + "\n" + entry.Stderr)
+	return ghCommandOutputLooksRateLimited(entry.Stdout, entry.Stderr)
+}
+
+func ghCommandOutputLooksRateLimited(stdout, stderr string) bool {
+	text := strings.ToLower(stdout + "\n" + stderr)
 	return strings.Contains(text, "api rate limit") ||
 		strings.Contains(text, "secondary rate limit") ||
 		strings.Contains(text, "rate limit exceeded") ||
@@ -264,13 +287,13 @@ func waitGHCommandCache(entryPath, lockPath string, ttl time.Duration) (ghComman
 
 func (a *App) ghCommandCacheKey(ctx context.Context, args []string) string {
 	material := strings.Join([]string{
-		"v3",
+		"v4",
 		config.ResolvePath(a.configPath),
 		ghCommandCacheScope(args),
 		os.Getenv("GH_HOST"),
 		ghCommandCacheRepoEnv(args),
 		a.ghCommandStableIdentity(ctx, args),
-		strings.Join(args, "\x00"),
+		strings.Join(canonicalGHCommandArgs(args), "\x00"),
 	}, "\x00")
 	sum := sha256.Sum256([]byte(material))
 	return hex.EncodeToString(sum[:])
