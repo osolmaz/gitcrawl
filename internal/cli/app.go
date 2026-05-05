@@ -152,6 +152,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.runRuns(ctx, rest[1:])
 	case "search":
 		return a.runSearch(ctx, rest[1:])
+	case "gh":
+		return a.runGHShim(ctx, rest[1:])
 	case "configure":
 		return a.runConfigure(rest[1:])
 	case "refresh":
@@ -2698,6 +2700,7 @@ Core commands:
   cluster-explain      alias for cluster-detail
   neighbors            list vector-nearest local issue and pull request rows
   search               search local thread documents; also supports search issues|prs gh syntax
+  gh                   gh-compatible local cache shim with fallback to real gh
   portable prune       prune volatile payloads from a portable store
   tui [owner/repo]     browse clusters in the terminal UI; repo is inferred when omitted
 

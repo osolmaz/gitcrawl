@@ -76,6 +76,7 @@ Public commands:
 - `cluster-explain`
 - `neighbors`
 - `search`
+- `gh`
 - `close-thread`
 - `close-cluster`
 - `exclude-cluster-member`
@@ -101,6 +102,28 @@ gitcrawl search issues <query> -R owner/repo --state open --sync-if-stale 5m --j
 ```
 
 This compatibility path reads from local SQLite by default. It avoids GitHub REST search quota and is not a replacement for final live `gh` verification before comments, closes, labels, or merges. `--sync-if-stale <duration>` may run one metadata sync first when the repository mirror is older than the requested max age; the search result itself still comes from SQLite.
+
+`gh` is the agent-facing compatibility shim. It may be invoked as `gitcrawl gh ...` or by installing the binary as `gh`/`gitcrawl-gh`. Supported local reads:
+
+```text
+gitcrawl gh search issues|prs <query> -R owner/repo --state open --match comments --json number,title,url
+gitcrawl gh issue view 123 -R owner/repo --json number,title,state,url,body
+gitcrawl gh pr view 123 -R owner/repo --json number,title,state,url,isDraft,author
+gitcrawl gh issue list -R owner/repo --state open --search "hot loop" --json number,title,url
+gitcrawl gh pr list -R owner/repo --state open --search "manifest cache" --json number,title,url
+```
+
+Unsupported commands fall through to the real GitHub CLI. Read-only fallthroughs use a short persistent cache in `cache/gh-shim` for repeated agent calls (`run list/view`, `pr diff/checks`, `repo view/list`, `label list`, `issue/pr view`, and GET-only `api`). Mutating commands are never cached and clear the fallthrough cache on success. The shim does not add GitHub write-back behavior of its own; writes remain delegated to `gh`.
+
+Cache inspection commands:
+
+```text
+gitcrawl gh xcache stats
+gitcrawl gh xcache keys
+gitcrawl gh xcache flush
+```
+
+The cache key includes the resolved gitcrawl config path, current working directory, `GH_HOST`, `GH_REPO`, and exact `gh` arguments. This keeps sibling checkouts and portable stores isolated while still coalescing repeated calls from the same agent workspace. Concurrent cache misses use a lock file so one process populates the entry while peers wait for the result.
 
 ## Config
 

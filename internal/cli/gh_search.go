@@ -44,9 +44,14 @@ func (a *App) runGHSearch(ctx context.Context, args []string) error {
 	limitRaw := fs.String("limit", "", "maximum rows")
 	limitShortRaw := fs.String("L", "", "maximum rows")
 	jsonFieldsRaw := fs.String("json", "", "comma-separated JSON fields")
+	jqRaw := fs.String("jq", "", "jq filter for JSON output")
+	fs.String("match", "", "accepted for gh compatibility; local search covers indexed thread documents")
+	fs.String("sort", "", "accepted for gh compatibility")
+	fs.String("order", "", "accepted for gh compatibility")
 	syncIfStaleRaw := fs.String("sync-if-stale", "", "sync owner/repo first when the local mirror is older than this duration")
 	if err := fs.Parse(normalizeCommandArgs(args[1:], map[string]bool{
-		"R": true, "repo": true, "state": true, "limit": true, "L": true, "json": true, "sync-if-stale": true,
+		"R": true, "repo": true, "state": true, "limit": true, "L": true, "json": true, "jq": true,
+		"match": true, "sort": true, "order": true, "sync-if-stale": true,
 	})); err != nil {
 		return usageErr(err)
 	}
@@ -109,12 +114,7 @@ func (a *App) runGHSearch(ctx context.Context, args []string) error {
 		if err != nil {
 			return usageErr(err)
 		}
-		data, err := json.MarshalIndent(rows, "", "  ")
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintf(a.Stdout, "%s\n", data)
-		return err
+		return a.writeJSONValue(rows, strings.TrimSpace(*jqRaw))
 	}
 
 	for _, thread := range threads {
@@ -260,6 +260,8 @@ func ghSearchJSONValue(thread store.Thread, field string) (any, error) {
 	switch field {
 	case "number":
 		return thread.Number, nil
+	case "id":
+		return thread.GitHubID, nil
 	case "title":
 		return thread.Title, nil
 	case "state":
