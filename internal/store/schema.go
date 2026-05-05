@@ -122,6 +122,84 @@ create table if not exists thread_hunk_signatures (
   unique(snapshot_id, path, hunk_hash)
 );
 
+create table if not exists pull_request_details (
+  thread_id integer primary key references threads(id) on delete cascade,
+  repo_id integer not null references repositories(id) on delete cascade,
+  number integer not null,
+  base_sha text,
+  head_sha text,
+  head_ref text,
+  head_repo_full_name text,
+  mergeable_state text,
+  additions integer not null default 0,
+  deletions integer not null default 0,
+  changed_files integer not null default 0,
+  raw_json text not null,
+  fetched_at text not null,
+  updated_at text not null,
+  unique(repo_id, number)
+);
+
+create table if not exists pull_request_files (
+  thread_id integer not null references threads(id) on delete cascade,
+  path text not null,
+  status text,
+  additions integer not null default 0,
+  deletions integer not null default 0,
+  changes integer not null default 0,
+  previous_path text,
+  patch text,
+  raw_json text not null,
+  fetched_at text not null,
+  primary key(thread_id, path)
+);
+
+create table if not exists pull_request_commits (
+  thread_id integer not null references threads(id) on delete cascade,
+  sha text not null,
+  message text,
+  author_login text,
+  author_name text,
+  committed_at text,
+  html_url text,
+  raw_json text not null,
+  fetched_at text not null,
+  primary key(thread_id, sha)
+);
+
+create table if not exists pull_request_checks (
+  id integer primary key,
+  thread_id integer not null references threads(id) on delete cascade,
+  name text not null,
+  status text,
+  conclusion text,
+  details_url text,
+  workflow_name text,
+  started_at text,
+  completed_at text,
+  raw_json text not null,
+  fetched_at text not null,
+  unique(thread_id, name, details_url)
+);
+
+create table if not exists github_workflow_runs (
+  repo_id integer not null references repositories(id) on delete cascade,
+  run_id text not null,
+  run_number integer not null default 0,
+  head_branch text,
+  head_sha text,
+  status text,
+  conclusion text,
+  workflow_name text,
+  event text,
+  html_url text,
+  created_at_gh text,
+  updated_at_gh text,
+  raw_json text not null,
+  fetched_at text not null,
+  primary key(repo_id, run_id)
+);
+
 create table if not exists documents (
   id integer primary key,
   thread_id integer not null unique references threads(id) on delete cascade,
@@ -391,6 +469,11 @@ create index if not exists idx_threads_repo_updated on threads(repo_id, updated_
 create index if not exists idx_comments_thread_type on comments(thread_id, comment_type);
 create index if not exists idx_thread_revisions_thread_created on thread_revisions(thread_id, created_at);
 create index if not exists idx_thread_changed_files_path on thread_changed_files(path);
+create index if not exists idx_pull_request_details_repo_number on pull_request_details(repo_id, number);
+create index if not exists idx_pull_request_files_path on pull_request_files(path);
+create index if not exists idx_pull_request_checks_thread_status on pull_request_checks(thread_id, status, conclusion);
+create index if not exists idx_github_workflow_runs_repo_branch on github_workflow_runs(repo_id, head_branch, run_id);
+create index if not exists idx_github_workflow_runs_repo_sha on github_workflow_runs(repo_id, head_sha, run_id);
 create index if not exists idx_thread_fingerprints_hash on thread_fingerprints(fingerprint_hash);
 create index if not exists idx_thread_vectors_basis_model on thread_vectors(basis, model);
 create index if not exists idx_sync_runs_repo_status_id on sync_runs(repo_id, status, id);

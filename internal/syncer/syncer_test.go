@@ -49,6 +49,18 @@ func (fakeGitHub) GetIssue(ctx context.Context, owner, repo string, number int, 
 	}, nil
 }
 
+func (fakeGitHub) GetPull(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) (map[string]any, error) {
+	return map[string]any{
+		"number":          number,
+		"head":            map[string]any{"sha": "head-sha", "ref": "feature", "repo": map[string]any{"full_name": "openclaw/gitcrawl"}},
+		"base":            map[string]any{"sha": "base-sha"},
+		"mergeable_state": "clean",
+		"additions":       12,
+		"deletions":       3,
+		"changed_files":   2,
+	}, nil
+}
+
 func (fakeGitHub) ListRepositoryIssues(ctx context.Context, owner, repo string, options gh.ListIssuesOptions, reporter gh.Reporter) ([]map[string]any, error) {
 	if options.State == "closed" {
 		return nil, nil
@@ -102,6 +114,22 @@ func (fakeGitHub) ListPullReviews(ctx context.Context, owner, repo string, numbe
 }
 
 func (fakeGitHub) ListPullReviewComments(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error) {
+	return nil, nil
+}
+
+func (fakeGitHub) ListPullFiles(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error) {
+	return nil, nil
+}
+
+func (fakeGitHub) ListPullCommits(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error) {
+	return nil, nil
+}
+
+func (fakeGitHub) ListCommitCheckRuns(ctx context.Context, owner, repo, ref string, reporter gh.Reporter) ([]map[string]any, error) {
+	return nil, nil
+}
+
+func (fakeGitHub) ListWorkflowRuns(ctx context.Context, owner, repo string, options gh.ListWorkflowRunsOptions, reporter gh.Reporter) ([]map[string]any, error) {
 	return nil, nil
 }
 
@@ -195,6 +223,59 @@ func (pullCommentGitHub) ListPullReviewComments(ctx context.Context, owner, repo
 	}}, nil
 }
 
+type pullDetailsGitHub struct {
+	fakeGitHub
+}
+
+func (pullDetailsGitHub) ListPullFiles(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error) {
+	return []map[string]any{{
+		"filename":  "internal/cache.go",
+		"status":    "modified",
+		"additions": 10,
+		"deletions": 2,
+		"changes":   12,
+		"patch":     "@@ cache",
+	}}, nil
+}
+
+func (pullDetailsGitHub) ListPullCommits(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error) {
+	return []map[string]any{{
+		"sha":      "commit-sha",
+		"html_url": "https://github.com/openclaw/gitcrawl/commit/commit-sha",
+		"author":   map[string]any{"login": "alice"},
+		"commit": map[string]any{
+			"message": "feat: cache",
+			"author":  map[string]any{"name": "Alice", "date": "2026-04-26T00:00:00Z"},
+		},
+	}}, nil
+}
+
+func (pullDetailsGitHub) ListCommitCheckRuns(ctx context.Context, owner, repo, ref string, reporter gh.Reporter) ([]map[string]any, error) {
+	return []map[string]any{{
+		"name":        "test",
+		"status":      "completed",
+		"conclusion":  "success",
+		"details_url": "https://github.com/openclaw/gitcrawl/actions/runs/99",
+		"check_suite": map[string]any{"app": map[string]any{"name": "GitHub Actions"}},
+	}}, nil
+}
+
+func (pullDetailsGitHub) ListWorkflowRuns(ctx context.Context, owner, repo string, options gh.ListWorkflowRunsOptions, reporter gh.Reporter) ([]map[string]any, error) {
+	return []map[string]any{{
+		"id":          99,
+		"run_number":  7,
+		"head_branch": "feature",
+		"head_sha":    options.HeadSHA,
+		"status":      "completed",
+		"conclusion":  "success",
+		"name":        "CI",
+		"event":       "pull_request",
+		"html_url":    "https://github.com/openclaw/gitcrawl/actions/runs/99",
+		"created_at":  "2026-04-26T00:00:00Z",
+		"updated_at":  "2026-04-26T00:01:00Z",
+	}}, nil
+}
+
 func TestSyncPersistsIssuesAndPullRequests(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
@@ -268,6 +349,42 @@ func TestSyncHydratesPullReviewComments(t *testing.T) {
 	}
 	if len(threads) != 1 || threads[0].Kind != "pull_request" {
 		t.Fatalf("threads = %+v", threads)
+	}
+}
+
+func TestSyncHydratesPullRequestDetails(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	s := New(pullDetailsGitHub{}, st)
+	s.now = func() time.Time { return time.Date(2026, 4, 26, 0, 0, 0, 0, time.UTC) }
+	stats, err := s.Sync(ctx, Options{Owner: "openclaw", Repo: "gitcrawl", Numbers: []int{8}, IncludePRDetails: true})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if stats.PRDetailsSynced != 1 || stats.PRFilesSynced != 1 || stats.PRCommitsSynced != 1 || stats.PRChecksSynced != 1 || stats.WorkflowRunsSynced != 1 {
+		t.Fatalf("stats = %#v", stats)
+	}
+	repo, err := st.RepositoryByFullName(ctx, "openclaw/gitcrawl")
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+	cache, err := st.PullRequestCache(ctx, repo.ID, 8)
+	if err != nil {
+		t.Fatalf("pr cache: %v", err)
+	}
+	if cache.Detail.HeadSHA != "head-sha" || len(cache.Files) != 1 || len(cache.Commits) != 1 || len(cache.Checks) != 1 {
+		t.Fatalf("cache = %+v", cache)
+	}
+	runs, err := st.ListWorkflowRuns(ctx, repo.ID, store.WorkflowRunListOptions{HeadSHA: "head-sha", Limit: 10})
+	if err != nil {
+		t.Fatalf("workflow runs: %v", err)
+	}
+	if len(runs) != 1 || runs[0].RunID != "99" {
+		t.Fatalf("runs = %+v", runs)
 	}
 }
 

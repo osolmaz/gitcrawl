@@ -1717,8 +1717,10 @@ func (a *App) runSync(ctx context.Context, args []string) error {
 	limitRaw := fs.String("limit", "", "maximum issue/PR rows")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	includeComments := fs.Bool("include-comments", false, "hydrate issue comments, PR reviews, and PR review comments")
+	includePRDetails := fs.Bool("include-pr-details", false, "hydrate PR files, commits, checks, and workflow runs")
+	withRaw := fs.String("with", "", "extra hydration: pr-details")
 	fs.Bool("include-code", false, "accepted for compatibility; code hydration is not implemented yet")
-	if err := fs.Parse(normalizeCommandArgs(args, map[string]bool{"numbers": true, "since": true, "state": true, "limit": true})); err != nil {
+	if err := fs.Parse(normalizeCommandArgs(args, map[string]bool{"numbers": true, "since": true, "state": true, "limit": true, "with": true})); err != nil {
 		return usageErr(err)
 	}
 	a.applyCommandJSON(*jsonOut)
@@ -1737,13 +1739,18 @@ func (a *App) runSync(ctx context.Context, args []string) error {
 	if err != nil {
 		return usageErr(err)
 	}
+	with, err := parseSyncWith(*withRaw)
+	if err != nil {
+		return usageErr(err)
+	}
 
 	stats, err := a.syncRepository(ctx, owner, repo, syncOptions{
-		Since:           strings.TrimSpace(*since),
-		State:           strings.TrimSpace(*state),
-		Limit:           limit,
-		Numbers:         numbers,
-		IncludeComments: *includeComments,
+		Since:            strings.TrimSpace(*since),
+		State:            strings.TrimSpace(*state),
+		Limit:            limit,
+		Numbers:          numbers,
+		IncludeComments:  *includeComments,
+		IncludePRDetails: *includePRDetails || with["pr-details"],
 	})
 	if err != nil {
 		return err
@@ -1752,11 +1759,29 @@ func (a *App) runSync(ctx context.Context, args []string) error {
 }
 
 type syncOptions struct {
-	Since           string
-	State           string
-	Limit           int
-	Numbers         []int
-	IncludeComments bool
+	Since            string
+	State            string
+	Limit            int
+	Numbers          []int
+	IncludeComments  bool
+	IncludePRDetails bool
+}
+
+func parseSyncWith(value string) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, part := range strings.Split(value, ",") {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+		switch name {
+		case "pr-details":
+			out[name] = true
+		default:
+			return nil, fmt.Errorf("unsupported --with value %q", name)
+		}
+	}
+	return out, nil
 }
 
 func (a *App) syncRepository(ctx context.Context, owner, repo string, options syncOptions) (syncer.Stats, error) {
@@ -1780,13 +1805,14 @@ func (a *App) syncRepository(ctx context.Context, owner, repo string, options sy
 	client := gh.New(gh.Options{Token: token.Value, BaseURL: githubBaseURL()})
 	service := syncer.New(client, st)
 	stats, err := service.Sync(ctx, syncer.Options{
-		Owner:           owner,
-		Repo:            repo,
-		State:           strings.TrimSpace(options.State),
-		Since:           strings.TrimSpace(options.Since),
-		Limit:           options.Limit,
-		Numbers:         options.Numbers,
-		IncludeComments: options.IncludeComments,
+		Owner:            owner,
+		Repo:             repo,
+		State:            strings.TrimSpace(options.State),
+		Since:            strings.TrimSpace(options.Since),
+		Limit:            options.Limit,
+		Numbers:          options.Numbers,
+		IncludeComments:  options.IncludeComments,
+		IncludePRDetails: options.IncludePRDetails,
 		Reporter: func(message string) {
 			fmt.Fprintln(a.Stderr, message)
 		},

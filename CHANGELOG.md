@@ -4,6 +4,7 @@
 
 - Force embedding refreshes when the embedding input rune cap changes, so stale larger-cap vectors are not reused.
 - Expand the `gh` shim with local list filters, PR diff caching by cached head SHA, xcache GC, hit/miss/write counters, and throttled portable-store refreshes to reduce GitHub API pressure across agent sessions.
+- Add explicit PR-detail hydration for files, commits, checks, and workflow runs so `gh pr view`, `gh pr checks`, and `gh run list/view` can answer common review reads from the existing SQLite cache.
 
 ## 0.1.2 - 2026-05-01
 

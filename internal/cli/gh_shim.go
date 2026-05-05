@@ -47,8 +47,42 @@ func (a *App) runGHShim(ctx context.Context, args []string) error {
 				}
 				_ = a.incrementGHXCacheCounter("local_hits")
 				return nil
+			case "checks":
+				if args[0] == "pr" {
+					if err := a.runGHPRChecks(ctx, args[2:]); err != nil {
+						if isLocalGHUnsupported(err) {
+							return a.execRealGHMaybeCached(ctx, args)
+						}
+						return err
+					}
+					_ = a.incrementGHXCacheCounter("local_hits")
+					return nil
+				}
 			case "list":
 				if err := a.runGHThreadList(ctx, args[0], args[2:]); err != nil {
+					if isLocalGHUnsupported(err) {
+						return a.execRealGHMaybeCached(ctx, args)
+					}
+					return err
+				}
+				_ = a.incrementGHXCacheCounter("local_hits")
+				return nil
+			}
+		}
+	case "run":
+		if len(args) >= 2 {
+			switch args[1] {
+			case "list":
+				if err := a.runGHRunList(ctx, args[2:]); err != nil {
+					if isLocalGHUnsupported(err) {
+						return a.execRealGHMaybeCached(ctx, args)
+					}
+					return err
+				}
+				_ = a.incrementGHXCacheCounter("local_hits")
+				return nil
+			case "view":
+				if err := a.runGHRunView(ctx, args[2:]); err != nil {
 					if isLocalGHUnsupported(err) {
 						return a.execRealGHMaybeCached(ctx, args)
 					}
@@ -95,11 +129,11 @@ func (a *App) runGHThreadView(ctx context.Context, resource string, args []strin
 		if jsonFields == "" {
 			jsonFields = "number,title,state,url"
 		}
-		rows, err := ghSearchJSONRows([]store.Thread{thread}, jsonFields)
+		row, err := a.ghThreadViewJSONRow(ctx, repoValue, thread, jsonFields)
 		if err != nil {
 			return localGHUnsupported(err)
 		}
-		return a.writeJSONValue(rows[0], strings.TrimSpace(*jqRaw))
+		return a.writeJSONValue(row, strings.TrimSpace(*jqRaw))
 	}
 	_, err = fmt.Fprintf(a.Stdout, "title:\t%s\nstate:\t%s\nurl:\t%s\n\n%s\n", thread.Title, thread.State, thread.HTMLURL, strings.TrimSpace(thread.Body))
 	return err

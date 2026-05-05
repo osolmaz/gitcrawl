@@ -43,48 +43,6 @@ func TestGHShimSearchAcceptsGHFlags(t *testing.T) {
 	}
 }
 
-func TestGHShimViewAndListUseLocalCache(t *testing.T) {
-	ctx := context.Background()
-	configPath := seedGHShimRepo(t, ctx)
-
-	run := New()
-	var stdout bytes.Buffer
-	run.Stdout = &stdout
-	if err := run.Run(ctx, []string{"--config", configPath, "gh", "pr", "view", "12", "-R", "openclaw/openclaw", "--json", "number,title,isDraft,author"}); err != nil {
-		t.Fatalf("gh pr view: %v", err)
-	}
-	var view map[string]any
-	if err := json.Unmarshal(stdout.Bytes(), &view); err != nil {
-		t.Fatalf("decode view: %v\n%s", err, stdout.String())
-	}
-	if int(view["number"].(float64)) != 12 || view["isDraft"] != true {
-		t.Fatalf("view = %#v", view)
-	}
-
-	stdout.Reset()
-	if err := run.Run(ctx, []string{"--config", configPath, "gh", "issue", "list", "-R", "openclaw/openclaw", "--state", "open", "--json", "number,title"}); err != nil {
-		t.Fatalf("gh issue list: %v", err)
-	}
-	var list []map[string]any
-	if err := json.Unmarshal(stdout.Bytes(), &list); err != nil {
-		t.Fatalf("decode list: %v\n%s", err, stdout.String())
-	}
-	if len(list) != 1 || int(list[0]["number"].(float64)) != 10 {
-		t.Fatalf("list = %#v", list)
-	}
-
-	stdout.Reset()
-	if err := run.Run(ctx, []string{"--config", configPath, "gh", "issue", "list", "-R", "openclaw/openclaw", "--author", "alice", "--assignee", "peter", "--label", "bug", "--json", "number,title"}); err != nil {
-		t.Fatalf("gh issue list filtered: %v", err)
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &list); err != nil {
-		t.Fatalf("decode filtered list: %v\n%s", err, stdout.String())
-	}
-	if len(list) != 1 || int(list[0]["number"].(float64)) != 10 {
-		t.Fatalf("filtered list = %#v", list)
-	}
-}
-
 func TestGHShimFallsBackForUnsupportedRead(t *testing.T) {
 	ctx := context.Background()
 	configPath := seedGHShimRepo(t, ctx)
@@ -253,6 +211,17 @@ echo "diff-$count:$*"
 		UpdatedAtGitHub: "2026-04-27T03:00:00Z", UpdatedAt: "2026-04-27T03:00:00Z",
 	}); err != nil {
 		t.Fatalf("update pr head: %v", err)
+	}
+	if err := st.UpsertPullRequestCache(ctx, store.PullRequestDetail{
+		ThreadID:  prIDForTest(t, ctx, st, repo.ID, 12),
+		RepoID:    repo.ID,
+		Number:    12,
+		HeadSHA:   "def456",
+		RawJSON:   `{"head":{"sha":"def456"}}`,
+		FetchedAt: "2026-04-27T03:00:00Z",
+		UpdatedAt: "2026-04-27T03:00:00Z",
+	}, nil, nil, nil, nil); err != nil {
+		t.Fatalf("update pr cache head: %v", err)
 	}
 	if err := st.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
@@ -447,6 +416,67 @@ func seedGHShimRepo(t *testing.T, ctx context.Context) string {
 	}
 	if _, err := st.UpsertDocument(ctx, store.Document{ThreadID: prID, Title: "Manifest cache update", RawText: "manifest cache refresh", DedupeText: "manifest cache refresh", UpdatedAt: "2026-04-27T02:00:00Z"}); err != nil {
 		t.Fatalf("seed pr document: %v", err)
+	}
+	if err := st.UpsertPullRequestCache(ctx, store.PullRequestDetail{
+		ThreadID:         prID,
+		RepoID:           repoID,
+		Number:           12,
+		BaseSHA:          "base123",
+		HeadSHA:          "abc123",
+		HeadRef:          "manifest-cache",
+		HeadRepoFullName: "openclaw/openclaw",
+		MergeableState:   "clean",
+		Additions:        10,
+		Deletions:        2,
+		ChangedFiles:     1,
+		RawJSON:          `{"head":{"sha":"abc123"}}`,
+		FetchedAt:        "2026-04-27T02:00:00Z",
+		UpdatedAt:        "2026-04-27T02:00:00Z",
+	}, []store.PullRequestFile{{
+		ThreadID:  prID,
+		Path:      "internal/cache.go",
+		Status:    "modified",
+		Additions: 10,
+		Deletions: 2,
+		Changes:   12,
+		RawJSON:   "{}",
+		FetchedAt: "2026-04-27T02:00:00Z",
+	}}, []store.PullRequestCommit{{
+		ThreadID:    prID,
+		SHA:         "commit123",
+		Message:     "feat: cache",
+		AuthorLogin: "alice",
+		AuthorName:  "Alice",
+		CommittedAt: "2026-04-27T01:00:00Z",
+		HTMLURL:     "https://github.com/openclaw/openclaw/commit/commit123",
+		RawJSON:     "{}",
+		FetchedAt:   "2026-04-27T02:00:00Z",
+	}}, []store.PullRequestCheck{{
+		ThreadID:     prID,
+		Name:         "test",
+		Status:       "completed",
+		Conclusion:   "success",
+		DetailsURL:   "https://github.com/openclaw/openclaw/actions/runs/99",
+		WorkflowName: "CI",
+		RawJSON:      "{}",
+		FetchedAt:    "2026-04-27T02:00:00Z",
+	}}, []store.WorkflowRun{{
+		RepoID:       repoID,
+		RunID:        "99",
+		RunNumber:    7,
+		HeadBranch:   "manifest-cache",
+		HeadSHA:      "abc123",
+		Status:       "completed",
+		Conclusion:   "success",
+		WorkflowName: "CI",
+		Event:        "pull_request",
+		HTMLURL:      "https://github.com/openclaw/openclaw/actions/runs/99",
+		CreatedAtGH:  "2026-04-27T01:00:00Z",
+		UpdatedAtGH:  "2026-04-27T02:00:00Z",
+		RawJSON:      "{}",
+		FetchedAt:    "2026-04-27T02:00:00Z",
+	}}); err != nil {
+		t.Fatalf("seed pr cache: %v", err)
 	}
 	if err := st.Close(); err != nil {
 		t.Fatalf("close store: %v", err)

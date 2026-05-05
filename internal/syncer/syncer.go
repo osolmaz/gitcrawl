@@ -18,10 +18,15 @@ import (
 type GitHubClient interface {
 	GetRepo(ctx context.Context, owner, repo string, reporter gh.Reporter) (map[string]any, error)
 	GetIssue(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) (map[string]any, error)
+	GetPull(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) (map[string]any, error)
 	ListRepositoryIssues(ctx context.Context, owner, repo string, options gh.ListIssuesOptions, reporter gh.Reporter) ([]map[string]any, error)
 	ListIssueComments(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error)
 	ListPullReviews(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error)
 	ListPullReviewComments(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error)
+	ListPullFiles(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error)
+	ListPullCommits(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error)
+	ListCommitCheckRuns(ctx context.Context, owner, repo, ref string, reporter gh.Reporter) ([]map[string]any, error)
+	ListWorkflowRuns(ctx context.Context, owner, repo string, options gh.ListWorkflowRunsOptions, reporter gh.Reporter) ([]map[string]any, error)
 }
 
 type Syncer struct {
@@ -31,14 +36,15 @@ type Syncer struct {
 }
 
 type Options struct {
-	Owner           string
-	Repo            string
-	State           string
-	Since           string
-	Limit           int
-	Numbers         []int
-	IncludeComments bool
-	Reporter        gh.Reporter
+	Owner            string
+	Repo             string
+	State            string
+	Since            string
+	Limit            int
+	Numbers          []int
+	IncludeComments  bool
+	IncludePRDetails bool
+	Reporter         gh.Reporter
 }
 
 type Stats struct {
@@ -47,6 +53,11 @@ type Stats struct {
 	IssuesSynced       int    `json:"issues_synced"`
 	PullRequestsSynced int    `json:"pull_requests_synced"`
 	CommentsSynced     int    `json:"comments_synced"`
+	PRDetailsSynced    int    `json:"pr_details_synced"`
+	PRFilesSynced      int    `json:"pr_files_synced"`
+	PRCommitsSynced    int    `json:"pr_commits_synced"`
+	PRChecksSynced     int    `json:"pr_checks_synced"`
+	WorkflowRunsSynced int    `json:"workflow_runs_synced"`
 	ThreadsClosed      int    `json:"threads_closed"`
 	RequestedSince     string `json:"requested_since,omitempty"`
 	Limit              int    `json:"limit,omitempty"`
@@ -137,6 +148,17 @@ func (s *Syncer) Sync(ctx context.Context, options Options) (Stats, error) {
 					return err
 				}
 				stats.CommentsSynced += len(comments)
+			}
+			if options.IncludePRDetails && thread.Kind == "pull_request" {
+				detailStats, err := s.syncPullRequestDetails(ctx, st, options, thread)
+				if err != nil {
+					return err
+				}
+				stats.PRDetailsSynced++
+				stats.PRFilesSynced += detailStats.files
+				stats.PRCommitsSynced += detailStats.commits
+				stats.PRChecksSynced += detailStats.checks
+				stats.WorkflowRunsSynced += detailStats.runs
 			}
 			if _, err := st.UpsertDocument(ctx, documents.BuildWithComments(thread, comments)); err != nil {
 				return err

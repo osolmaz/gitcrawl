@@ -263,7 +263,21 @@ func (a *App) ghCommandStableIdentity(ctx context.Context, args []string) string
 	if err != nil {
 		return ""
 	}
-	sha := ghPRHeadSHAFromRawJSON(thread.RawJSON)
+	sha := ""
+	owner, repoName, err := parseOwnerRepo(repo)
+	if err == nil {
+		if rt, openErr := a.openLocalRuntimeReadOnly(ctx); openErr == nil {
+			if localRepo, repoErr := rt.repository(ctx, owner, repoName); repoErr == nil {
+				if cache, cacheErr := rt.Store.PullRequestCache(ctx, localRepo.ID, number); cacheErr == nil {
+					sha = cache.Detail.HeadSHA
+				}
+			}
+			_ = rt.Store.Close()
+		}
+	}
+	if sha == "" {
+		sha = ghPRHeadSHAFromRawJSON(thread.RawJSON)
+	}
 	if sha == "" {
 		return ""
 	}

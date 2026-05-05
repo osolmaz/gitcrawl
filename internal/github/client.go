@@ -37,6 +37,12 @@ type ListIssuesOptions struct {
 	ExpectedTotal int
 }
 
+type ListWorkflowRunsOptions struct {
+	Branch  string
+	HeadSHA string
+	Limit   int
+}
+
 type RequestError struct {
 	Method  string
 	URL     string
@@ -135,6 +141,45 @@ func (c *Client) ListPullReviewComments(ctx context.Context, owner, repo string,
 func (c *Client) ListPullFiles(ctx context.Context, owner, repo string, number int, reporter Reporter) ([]map[string]any, error) {
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/files?per_page=100", pathEscape(owner), pathEscape(repo), number)
 	return c.paginate(ctx, path, 0, 0, reporter)
+}
+
+func (c *Client) ListPullCommits(ctx context.Context, owner, repo string, number int, reporter Reporter) ([]map[string]any, error) {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100", pathEscape(owner), pathEscape(repo), number)
+	return c.paginate(ctx, path, 0, 0, reporter)
+}
+
+func (c *Client) ListCommitCheckRuns(ctx context.Context, owner, repo, ref string, reporter Reporter) ([]map[string]any, error) {
+	var payload struct {
+		CheckRuns []map[string]any `json:"check_runs"`
+	}
+	path := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs?per_page=100", pathEscape(owner), pathEscape(repo), pathEscape(ref))
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, reporter, &payload); err != nil {
+		return nil, err
+	}
+	return payload.CheckRuns, nil
+}
+
+func (c *Client) ListWorkflowRuns(ctx context.Context, owner, repo string, options ListWorkflowRunsOptions, reporter Reporter) ([]map[string]any, error) {
+	values := url.Values{}
+	values.Set("per_page", "100")
+	if options.Branch != "" {
+		values.Set("branch", options.Branch)
+	}
+	if options.HeadSHA != "" {
+		values.Set("head_sha", options.HeadSHA)
+	}
+	path := fmt.Sprintf("/repos/%s/%s/actions/runs?%s", pathEscape(owner), pathEscape(repo), values.Encode())
+	var payload struct {
+		WorkflowRuns []map[string]any `json:"workflow_runs"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, reporter, &payload); err != nil {
+		return nil, err
+	}
+	rows := payload.WorkflowRuns
+	if options.Limit > 0 && len(rows) > options.Limit {
+		rows = rows[:options.Limit]
+	}
+	return rows, nil
 }
 
 func (c *Client) paginate(ctx context.Context, firstPath string, limit int, expectedItems int, reporter Reporter) ([]map[string]any, error) {

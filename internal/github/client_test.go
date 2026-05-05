@@ -158,8 +158,13 @@ func TestClientSingleResourceAndCollectionEndpoints(t *testing.T) {
 		case "/repos/openclaw/gitcrawl/issues/7/comments",
 			"/repos/openclaw/gitcrawl/pulls/8/reviews",
 			"/repos/openclaw/gitcrawl/pulls/8/comments",
-			"/repos/openclaw/gitcrawl/pulls/8/files":
+			"/repos/openclaw/gitcrawl/pulls/8/files",
+			"/repos/openclaw/gitcrawl/pulls/8/commits":
 			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 1}})
+		case "/repos/openclaw/gitcrawl/commits/abc/check-runs":
+			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []map[string]any{{"name": "test"}}})
+		case "/repos/openclaw/gitcrawl/actions/runs":
+			_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{{"id": 99}}})
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.String())
 		}
@@ -183,14 +188,21 @@ func TestClientSingleResourceAndCollectionEndpoints(t *testing.T) {
 		"review-comments": func() ([]map[string]any, error) {
 			return client.ListPullReviewComments(ctx, "openclaw", "gitcrawl", 8, nil)
 		},
-		"files": func() ([]map[string]any, error) { return client.ListPullFiles(ctx, "openclaw", "gitcrawl", 8, nil) },
+		"files":   func() ([]map[string]any, error) { return client.ListPullFiles(ctx, "openclaw", "gitcrawl", 8, nil) },
+		"commits": func() ([]map[string]any, error) { return client.ListPullCommits(ctx, "openclaw", "gitcrawl", 8, nil) },
+		"checks": func() ([]map[string]any, error) {
+			return client.ListCommitCheckRuns(ctx, "openclaw", "gitcrawl", "abc", nil)
+		},
+		"runs": func() ([]map[string]any, error) {
+			return client.ListWorkflowRuns(ctx, "openclaw", "gitcrawl", ListWorkflowRunsOptions{HeadSHA: "abc"}, nil)
+		},
 	} {
 		rows, err := fn()
 		if err != nil || len(rows) != 1 {
 			t.Fatalf("%s rows = %+v err=%v", name, rows, err)
 		}
 	}
-	if len(requests) != 7 {
+	if len(requests) != 10 {
 		t.Fatalf("requests = %+v", requests)
 	}
 }
