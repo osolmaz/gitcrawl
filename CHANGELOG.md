@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Document the crawlkit control surface now available on `main`, including
+  `metadata --json`, `status --json`, and `doctor --json` for local launchers
+  and CI.
+- Clarify that `gitcrawl tui` remains the reference terminal browser for the
+  crawl app family while shared `crawlkit/tui` converges on the same panes,
+  sorting, action menus, and status chrome.
+- Add command-reference coverage for the read-only metadata/status commands.
+
 ## 0.2.1 - 2026-05-05
 
 - Improve `gh` shim cache coordination and observability with stale-while-revalidate reads, finer Actions/API TTLs, recent-window stats, top miss keys, and `xcache snapshot`.

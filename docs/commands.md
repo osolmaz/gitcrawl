@@ -32,6 +32,8 @@ These work on every command.
 | --- | --- | --- |
 | `gitcrawl init [--db --portable-store --portable-db --store-dir --json]` | Create config, database, runtime directories; optionally clone a portable store | [Installation](/installation/), [Portable stores](/portable-stores/) |
 | `gitcrawl doctor [--json]` | Health check for config, database, credentials, model selection, repo/thread counts | [Configuration](/configuration/#gitcrawl-doctor) |
+| `gitcrawl metadata [--json]` | Print the crawlkit command/control manifest for launchers and automation | — |
+| `gitcrawl status [--json]` | Print read-only archive status, database inventory, and control state | — |
 | `gitcrawl configure [--summary-model --embed-model --embedding-basis --json]` | Update model fields in `config.toml` | [Configuration](/configuration/#gitcrawl-configure) |
 | `gitcrawl version` | Print version | — |
 

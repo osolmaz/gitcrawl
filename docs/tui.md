@@ -10,6 +10,11 @@ permalink: /tui/
 `gitcrawl tui` is the interactive cluster browser. Keyboard-first, mouse-friendly, refreshes from local SQLite every 15 seconds.
 {: .fs-6 .fw-300 }
 
+It is also the reference terminal interaction model for the crawl app family.
+The shared `crawlkit/tui` browser used by Slack, Discord, and Notion archives
+is expected to match its pane focus, sortable headers, mouse/right-click
+actions, detail rendering, and status chrome wherever the data model allows it.
+
 1. TOC
 {:toc}
 
