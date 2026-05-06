@@ -62,6 +62,26 @@ gitcrawl cluster-detail owner/repo --id <id>
 gitcrawl gh pr view 123 -R owner/repo --json number,title,state,url
 ```
 
+## SQL
+
+`gitcrawl` does not currently expose a first-class `sql` command. For exact
+local archive counts or rankings, use SQLite read-only mode against the
+configured DB and prefer CLI commands for normal reads.
+
+Useful examples:
+
+```bash
+sqlite3 -readonly ~/.config/gitcrawl/gitcrawl.db \
+  "select count(*) as threads from threads;"
+sqlite3 -readonly ~/.config/gitcrawl/gitcrawl.db \
+  "select r.full_name, count(*) as threads from threads t join repositories r on r.id = t.repo_id group by r.full_name order by threads desc limit 20;"
+sqlite3 -readonly ~/.config/gitcrawl/gitcrawl.db \
+  "select state, count(*) as threads from threads group by state;"
+```
+
+Do not run mutating SQL against the archive. Use local maintainer commands for
+overrides instead of writing database rows directly.
+
 When the installed CLI lacks a new feature, build or run from
 `~/GIT/_Perso/gitcrawl` before concluding the feature is missing.
 

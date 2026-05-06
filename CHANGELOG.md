@@ -4,6 +4,8 @@
 
 - Add a repo-local `gitcrawl` agent skill for local archive, freshness, gh-shim,
   cluster, and verification workflows.
+- Document read-only SQLite query examples in the repo-local agent skill so
+  agents can do exact local archive counts without mutating state.
 - Document the crawlkit control surface now available on `main`, including
   `metadata --json`, `status --json`, and `doctor --json` for local launchers
   and CI.
