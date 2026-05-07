@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bump routine release workflow dependencies.
+
 - Add a repo-local `gitcrawl` agent skill for local archive, freshness, gh-shim,
   cluster, and verification workflows.
 - Document read-only SQLite query examples in the repo-local agent skill so
