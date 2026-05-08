@@ -11,20 +11,19 @@ requested scope, or the user asks for current external context.
 
 ## Sources
 
-- DB: `~/.config/gitcrawl/gitcrawl.db`
 - Config: `~/.config/gitcrawl/config.toml`
+- DB: resolve with `gitcrawl doctor --json`; portable-store installs may point at `~/.config/gitcrawl/stores/gitcrawl-store/data/openclaw__openclaw.sync.db` instead of the default local DB
 - Cache: `~/.config/gitcrawl/cache`
 - Vectors: `~/.config/gitcrawl/vectors`
-- Repo: `~/GIT/_Perso/gitcrawl`
-- Preferred CLI: `gitcrawl`; fallback to `go run ./cmd/gitcrawl` from the repo if the installed binary is stale
+- Repo: `openclaw/gitcrawl`; on ClawSweeper this is checked out at `~/clawsweeper-workspace/gitcrawl`
+- Preferred CLI: `gitcrawl`; fallback to `go run ./cmd/gitcrawl` from a verified repo checkout if the installed binary is stale
 
 ## Freshness
 
 For recent/current questions, check freshness before analysis:
 
 ```bash
-sqlite3 ~/.config/gitcrawl/gitcrawl.db \
-  "select coalesce(max(finished_at), '') from sync_runs where status = 'success';"
+gitcrawl doctor --json
 ```
 
 Routine refresh:
@@ -71,11 +70,12 @@ configured DB and prefer CLI commands for normal reads.
 Useful examples:
 
 ```bash
-sqlite3 -readonly ~/.config/gitcrawl/gitcrawl.db \
+db="$(gitcrawl doctor --json | jq -r .db_path)"
+sqlite3 -readonly "$db" \
   "select count(*) as threads from threads;"
-sqlite3 -readonly ~/.config/gitcrawl/gitcrawl.db \
+sqlite3 -readonly "$db" \
   "select r.full_name, count(*) as threads from threads t join repositories r on r.id = t.repo_id group by r.full_name order by threads desc limit 20;"
-sqlite3 -readonly ~/.config/gitcrawl/gitcrawl.db \
+sqlite3 -readonly "$db" \
   "select state, count(*) as threads from threads group by state;"
 ```
 
@@ -83,7 +83,7 @@ Do not run mutating SQL against the archive. Use local maintainer commands for
 overrides instead of writing database rows directly.
 
 When the installed CLI lacks a new feature, build or run from
-`~/GIT/_Perso/gitcrawl` before concluding the feature is missing.
+a verified `openclaw/gitcrawl` checkout before concluding the feature is missing.
 
 ## Maintainer Boundaries
 
