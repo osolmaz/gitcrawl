@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-05-08
+
 - Fix gh-shim portable-store auto-hydration so exact issue/PR refreshes write to the runtime mirror instead of dirtying the Git checkout, clear stale portable refresh locks, and make empty open issue discovery fall through when only targeted sync history exists.
 - Keep `cluster-detail` aligned with the default cluster list by showing closed historical members unless `--hide-closed` is passed, and fail fast when `GITCRAWL_GH_PATH` points back at the `gitcrawl` shim.
 
