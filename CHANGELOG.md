@@ -1,10 +1,11 @@
 # Changelog
 
-## 0.3.2 - Unreleased
+## 0.3.2 - 2026-05-10
 
 - Move top-level CLI parsing and `gh xcache` argument parsing onto Kong while keeping the broader `gh` shim pass-through compatible with GitHub CLI argument shapes.
 - Keep `gh xcache --help` discoverable and make `stats --since`, JSON output, and snapshot reset parsing share one typed parser path.
 - Teach the `gh` shim about the shared GitHub token rate-limit budget, serve stale successful reads more aggressively when that pooled budget is low, preserve GitHub CLI `--jq` handling for cached fallthrough reads, and expose low-budget stale hits in `xcache stats`.
+- Avoid extra `gh auth token` subprocesses during low-budget cache preflight checks.
 
 ## 0.3.1 - 2026-05-08
 

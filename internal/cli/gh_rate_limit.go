@@ -113,7 +113,7 @@ func (a *App) sharedRateLimitLowForHost(ctx context.Context, host string) (ghSha
 	if err != nil {
 		return ghSharedRateLimitState{}, false
 	}
-	token := a.resolveGitHubToken(ctx, cfg)
+	token := config.ResolveGitHubToken(cfg)
 	if token.Value == "" {
 		return ghSharedRateLimitState{}, false
 	}
