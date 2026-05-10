@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.3.3 - Unreleased
+
 ## 0.3.2 - 2026-05-10
 
 - Move top-level CLI parsing and `gh xcache` argument parsing onto Kong while keeping the broader `gh` shim pass-through compatible with GitHub CLI argument shapes.
