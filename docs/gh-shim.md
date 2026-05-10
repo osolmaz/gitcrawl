@@ -87,12 +87,16 @@ number.
 ### `gh run list` / `gh run view`
 
 ```bash
-gh run list -R owner/repo --branch main --limit 20 \
+gh run list -R owner/repo --commit <head-sha> --limit 20 \
+  --json databaseId,workflowName,status,conclusion
+gh run list -R owner/repo --branch <cached-pr-branch> --limit 20 \
   --json databaseId,workflowName,status,conclusion
 gh run view 123456789 -R owner/repo --json status,conclusion,headSha
 ```
 
-Workflow runs come from cached PR detail. Filters: `--branch`, `--commit` (head SHA). Supported fields: `databaseId`, `id`, `number`, `workflowName`, `name`, `displayTitle`, `status`, `conclusion`, `url`, `event`, `headBranch`, `headSha`, `createdAt`, `updatedAt`.
+Workflow runs come from cached PR detail only for exact reads: `--commit <head-sha>` or `--branch <branch>` when that branch maps to a cached PR. Broad branch reads such as `--branch main` fall through to live GitHub by default because local PR detail cannot prove tag-triggered, scheduled, manual, or post-merge release runs. Add `--cached` to force the local PR-detail snapshot when you explicitly want that. Supported fields: `databaseId`, `id`, `number`, `workflowName`, `name`, `displayTitle`, `status`, `conclusion`, `url`, `event`, `headBranch`, `headSha`, `createdAt`, `updatedAt`.
+
+Local workflow-run answers print a stderr liveness note. For release verification, prefer `gh --live run list ...` or exact REST reads such as `gh --live api repos/owner/repo/commits/<sha>/check-runs`.
 
 ## Read-only fallthroughs (cached)
 
@@ -113,6 +117,10 @@ Common Actions REST reads such as run status, job lists, and logs get Actions-aw
 Default cache TTLs are command-aware: active `gh run list` and run-status reads use `30s`; completed run views, completed Actions job lists, and run/job logs are kept for `12h`; completed run lists are kept for `30m`; workflow reads use `15m`; search reads use `15m`; issue/PR views use `15m` and closed thread reads are kept for `24h`; repo and release metadata use `1h`; GitHub user profile reads use `7d`; read-only GraphQL queries use `6h`; GitHub Pages metadata uses `15m` to `30m`; tagged/SHA `contents` API reads use `7d`; `gh pr diff` uses `5m` without a stable SHA and `7d` with one. Override with `GITCRAWL_GH_CACHE_TTL=5m` or similar.
 
 Repeat read failures are cached by default too. That avoids a fleet of agents all rediscovering the same missing release, workflow, secret, or unsupported field. Error entries are capped to shorter lifetimes, and rate-limit errors are capped at `2m` so a reset is not masked all day. If GitHub returns a rate-limit error while refreshing an expired successful entry, the shim serves that stale success with a warning instead of failing the read. Sync and shim traffic also share a token-hashed rate-limit ledger under the cache dir; when the pooled GitHub budget is low, the shim can serve a stale successful entry before calling GitHub and prints a stderr notice that names the remaining budget and reset time. When another process is already refreshing an expired successful entry, peers can serve that stale entry within a short command-aware grace window instead of joining the backend stampede. Set `GITCRAWL_GH_STALE_GRACE=0` to disable stale-while-revalidate, `GITCRAWL_GH_LOW_BUDGET_STALE_GRACE=0` to disable extra low-budget stale grace, or `GITCRAWL_GH_CACHE_ERRORS=0` to cache successful reads only.
+
+For CI/release liveness, add `--live` anywhere in the shim invocation (`gh --live run list ...`, `gh run --live view ...`, `gh --live release view ...`). The shim strips that flag and calls the real `gh` without consulting SQLite or the fallthrough cache. `GITCRAWL_GH_LIVE=1` makes this the default. `--cached` disables liveness bypasses and can force local `gh run list` reads where supported.
+
+After successful mutating Actions/release commands (`gh run rerun`, `gh workflow run`, `gh release create/upload/edit/delete`, and matching mutating `gh api` calls), the shim records a short liveness tombstone. For the next few minutes, matching Actions/release reads bypass cached fallthrough responses and print a stderr note. Tune the window with `GITCRAWL_GH_LIVENESS_TTL=5m`.
 
 ## Auto-hydration
 
@@ -156,6 +164,7 @@ All accept `--json` for scripting. `stats` accepts `--since 1h` for recent-windo
     "local_hits": 540,
     "fallback_hits": 88,
     "stale_hits": 1,
+    "live_bypasses": 2,
     "backend_misses": 12,
     "pass_through_writes": 4,
     "backend_misses_by_command": {
@@ -169,6 +178,21 @@ All accept `--json` for scripting. `stats` accepts `--since 1h` for recent-windo
       "api repos/openclaw/gitcrawl/actions/runs/123/logs -i": 2
     }
   },
+  "shim": {
+    "invocation": "gh xcache stats --json",
+    "plain_gh_path": "/Users/me/bin/gh",
+    "plain_gh_is_shim": true,
+    "backend_path": "/opt/homebrew/opt/gh/bin/gh",
+    "live_env": false
+  },
+  "liveness": [
+    {
+      "age": "12s",
+      "expires_in": "4m48s",
+      "tags": ["repo:owner/repo", "actions"],
+      "reason": "workflow run"
+    }
+  ],
   "commands": {
     "pr diff": { "entries": 30, "bytes": 184320 },
     "release view": { "entries": 14, "bytes": 18230 }
@@ -176,7 +200,7 @@ All accept `--json` for scripting. `stats` accepts `--since 1h` for recent-windo
 }
 ```
 
-`local_hits` are answered from SQLite; `fallback_hits` are answered from the fallthrough cache; `stale_hits` are expired successful cache entries served after a backend rate-limit response, while another process refreshes the key, or because the shared token budget is low; `low_budget_stale_hits` counts that last case specifically; `backend_misses` actually hit GitHub. The per-command, per-route, and per-key miss maps show which shapes still escape the cache, which is usually the fastest way to find the next optimization.
+`local_hits` are answered from SQLite; `fallback_hits` are answered from the fallthrough cache; `stale_hits` are expired successful cache entries served after a backend rate-limit response, while another process refreshes the key, or because the shared token budget is low; `low_budget_stale_hits` counts that last case specifically; `live_bypasses` counts `--live` and liveness-tombstone reads; `backend_misses` actually hit GitHub. The per-command, per-route, and per-key miss maps show which shapes still escape the cache, which is usually the fastest way to find the next optimization.
 
 ## Cache key composition
 

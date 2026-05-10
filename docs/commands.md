@@ -110,8 +110,9 @@ This applies to `sync --numbers`, `threads --numbers`, `embed --number`,
 | `gitcrawl gh pr list -R owner/repo [...]` | Same, for PRs | [gh shim](/gh-shim/) |
 | `gitcrawl gh pr checks <n-or-url> [-R owner/repo] --json <fields>` | Cached PR checks (auto-hydrates if stale) | [gh shim](/gh-shim/) |
 | `gitcrawl gh pr diff <n-or-url> [-R owner/repo]` | Falls through; cached by head SHA | [gh shim](/gh-shim/) |
-| `gitcrawl gh run list -R owner/repo [--branch --commit --json]` | Cached workflow runs | [gh shim](/gh-shim/) |
+| `gitcrawl gh run list -R owner/repo [--commit --branch --json]` | Exact cached workflow runs; broad branches fall through live | [gh shim](/gh-shim/) |
 | `gitcrawl gh run view <run-id> -R owner/repo [--json]` | Same, single run | [gh shim](/gh-shim/) |
+| `gitcrawl gh --live ...` | Bypass SQLite/fallthrough cache for CI/release liveness | [gh shim](/gh-shim/) |
 | `gitcrawl gh repo view\|list ...` | Falls through; cached briefly | [gh shim](/gh-shim/) |
 | `gitcrawl gh release list\|view ...` | Falls through; cached briefly | [gh shim](/gh-shim/#read-only-fallthroughs-cached) |
 | `gitcrawl gh workflow list\|view ...` | Falls through; cached briefly | [gh shim](/gh-shim/#read-only-fallthroughs-cached) |

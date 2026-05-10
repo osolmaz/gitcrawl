@@ -126,6 +126,10 @@ gitcrawl gh xcache stats --json \
 # During release/debug sessions, compare a recent window or snapshot before reset.
 gitcrawl gh xcache stats --since 1h --json
 gitcrawl gh xcache snapshot --reset --json
+
+# For release liveness, bypass local/fallthrough caches.
+gitcrawl gh --live run list -R owner/repo --commit "$sha" --json databaseId,status,conclusion,url
+gitcrawl gh --live release view "$tag" -R owner/repo
 ```
 
 ## Multi-repo automation

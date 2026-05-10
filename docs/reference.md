@@ -60,6 +60,8 @@ Override the config root with `--config <path>` or `GITCRAWL_CONFIG`.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `GITCRAWL_GH_PATH` | _(probed)_ | Path to the real `gh` binary |
+| `GITCRAWL_GH_LIVE` | _(off)_ | Set `1` to make `gh` shim reads bypass local/fallthrough caches by default |
+| `GITCRAWL_GH_LIVENESS_TTL` | `5m` | How long Actions/release reads bypass cache after matching mutations |
 | `GITCRAWL_GH_AUTO_HYDRATE` | _(on)_ | Set `0` to disable PR auto-hydration on cache miss |
 | `GITCRAWL_GH_CACHE_TTL` | `30s` for most commands | Override fallthrough cache TTL (e.g., `5m`, `1h`) |
 | `GITCRAWL_GH_CACHE_ERRORS` | _(on)_ | Set `0` to avoid caching non-zero read-only fallthroughs |

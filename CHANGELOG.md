@@ -2,6 +2,10 @@
 
 ## 0.3.3 - Unreleased
 
+- Make gh-shim Actions/release reads liveness-aware: broad `gh run list` now falls through to live GitHub unless it is pinned to a commit or cached PR branch, cached CI/release reads print a stderr provenance note, and `--live` bypasses shim/cache state.
+- Record short-lived liveness tombstones after mutating `gh run`, `gh workflow`, `gh release`, and matching `gh api` calls so immediate status/release checks bypass stale fallthrough cache entries.
+- Expose shim/backend paths, live mode, liveness tombstones, and live bypass counters in `gh xcache stats`.
+
 ## 0.3.2 - 2026-05-10
 
 - Move top-level CLI parsing and `gh xcache` argument parsing onto Kong while keeping the broader `gh` shim pass-through compatible with GitHub CLI argument shapes.
