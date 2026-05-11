@@ -58,8 +58,19 @@ Common commands:
 gitcrawl search issues "query" -R owner/repo --state open --json number,title,url
 gitcrawl clusters owner/repo --sort size --min-size 5
 gitcrawl cluster-detail owner/repo --id <id>
+gitcrawl gh pr status 123 -R owner/repo --compact
 gitcrawl gh pr view 123 -R owner/repo --json number,title,state,url
 ```
+
+For PR triage, start with cached status, then drill down only into blockers:
+
+```bash
+gitcrawl gh pr status <number-or-url> -R owner/repo --compact
+gitcrawl gh pr view <number-or-url> -R owner/repo --json number,title,state,url,isDraft,headRef,headSha
+gitcrawl gh pr checks <number-or-url> -R owner/repo --json name,state,conclusion,detailsUrl
+```
+
+`pr status` exits `0` clean, `1` action needed, `2` error, or `3` pending. Use `--live` before final merge/comment decisions when liveness matters; it refreshes exact PR details/review threads, then returns the same normalized status shape. Use `--cached` when measuring local cache coverage.
 
 ## SQL
 
@@ -106,4 +117,6 @@ Then run targeted CLI smoke for the touched surface, for example:
 gitcrawl doctor --json
 gitcrawl status --json
 gitcrawl search issues "test" -R openclaw/gitcrawl --state open --limit 5
+gitcrawl gh --live pr status https://github.com/openclaw/openclaw/pull/<n> --compact
+gitcrawl gh pr status https://github.com/openclaw/openclaw/pull/<n> --compact
 ```

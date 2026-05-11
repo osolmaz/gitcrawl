@@ -207,6 +207,40 @@ func TestClientSingleResourceAndCollectionEndpoints(t *testing.T) {
 	}
 }
 
+func TestListPullReviewThreadsDecodesGraphQLEnvelope(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/graphql" {
+			t.Fatalf("unexpected path: %s", r.URL.String())
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s", r.Method)
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("content-type = %q", r.Header.Get("Content-Type"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
+			"reviewThreads": map[string]any{
+				"nodes": []map[string]any{{
+					"id":         "PRRT_1",
+					"isResolved": false,
+					"comments":   map[string]any{"nodes": []map[string]any{{"id": "PRRC_1"}}},
+				}},
+				"pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""},
+			},
+		}}}})
+	}))
+	defer server.Close()
+
+	client := New(Options{BaseURL: server.URL, PageDelay: -1})
+	rows, err := client.ListPullReviewThreads(context.Background(), "openclaw", "gitcrawl", 8, nil)
+	if err != nil {
+		t.Fatalf("list review threads: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["id"] != "PRRT_1" {
+		t.Fatalf("rows = %#v", rows)
+	}
+}
+
 func TestNextPageAndReporterBranches(t *testing.T) {
 	header := `<https://api.github.test/repos/o/r/issues?page=2&state=open>; rel="next", <https://api.github.test/repos/o/r/issues?page=9>; rel="last"`
 	if got := nextPage(header); got != "/repos/o/r/issues?page=2&state=open" {

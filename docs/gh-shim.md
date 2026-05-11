@@ -84,6 +84,24 @@ Returns the cached check/status summary for the PR. If the cached PR detail is o
 Like `gh pr view`, a full pull request URL can supply both repository and
 number.
 
+### `gh pr status`
+
+```bash
+gh pr status 123 -R owner/repo --compact
+gh pr status https://github.com/owner/repo/pull/123 --json number,isMergeReady,blockingReasons,checks,reviewThreads,cache
+```
+
+Returns one cache-backed PR readiness summary for agent triage. Start here, then drill down with `gh pr view`, `gh pr checks`, `gh pr diff`, or review comments only when the status says something remains. The compact shape keeps the common fields small: PR number, URL, merge-ready boolean, blocking reasons, check state, review verdicts, review-thread counts, and cache age.
+
+Exit codes are agent-oriented:
+
+- `0`: clean / merge-ready
+- `1`: action needed
+- `2`: command or cache error
+- `3`: checks pending
+
+By default, a missing exact PR can auto-hydrate PR details, comments, checks, workflow runs, and review-thread state, then retry locally. `--cached` disables live fallback and returns an error when the local cache cannot answer. `--live` refreshes the exact PR first but still returns the normalized local readiness shape. `--solo` allows a PR with no approval to be considered ready when no other blocker exists.
+
 ### `gh run list` / `gh run view`
 
 ```bash
@@ -103,7 +121,7 @@ Local workflow-run answers print a stderr liveness note. For release verificatio
 These commands always run real `gh` but the response body is cached for the next caller in the same workspace:
 
 - `gh pr diff <number-or-url>` — keyed by the cached PR head SHA when available, so the cache is stable across many sequential agent reads; full PR URLs can omit `-R`
-- `gh issue list/status/view`, `gh pr list/status/view/checks`, and unsupported read-only local shim shapes
+- `gh issue list/status/view`, `gh pr list/view/checks/status`, and unsupported read-only local shim shapes
 - `gh release list/view`, `gh workflow list/view`, `gh secret list`, and `gh variable get/list`
 - `gh project list/view/field-list/item-list`, `gh ruleset check/list/view`, `gh gist list/view`, and `gh org list`
 - `gh repo view` / `gh repo list`
@@ -127,11 +145,11 @@ After successful mutating Actions/release commands (`gh run rerun`, `gh workflow
 When a local issue or PR read misses the cache, the shim can auto-hydrate exactly one thread before falling back:
 
 1. Shim detects a missing issue/PR row or stale PR detail (older than 90s, or head SHA mismatch)
-2. If `GITCRAWL_GH_AUTO_HYDRATE != 0` (the default), runs `gitcrawl sync --numbers <n>` and adds `--with pr-details` for PR detail reads
+2. If `GITCRAWL_GH_AUTO_HYDRATE != 0` (the default), runs `gitcrawl sync --numbers <n>` and adds `--with pr-details` for PR detail/status reads
 3. Retries the local query against the freshly populated cache
 4. Falls through to the real `gh` if hydration failed
 
-This keeps `gh issue view`, `gh pr view`, `gh pr checks`, and `gh run` reads cheap and fresh without manual sync orchestration. Disable with `GITCRAWL_GH_AUTO_HYDRATE=0` if you want the shim to be strictly cache-or-fallthrough.
+This keeps `gh issue view`, `gh pr view`, `gh pr status`, `gh pr checks`, and `gh run` reads cheap and fresh without manual sync orchestration. Exact PR hydration also stores GitHub review threads when available, preserving unresolved/resolved thread shape instead of flattening everything into loose review comments. Disable with `GITCRAWL_GH_AUTO_HYDRATE=0` if you want the shim to be strictly cache-or-fallthrough.
 
 When the configured database comes from a portable store, auto-hydration writes to the local runtime mirror, not the Git checkout. Broad empty open-issue discovery is also guarded: if `gh issue list` or empty-query `gh search issues --state open` would return no rows but the repo only has targeted sync history, the shim falls through to the real `gh` instead of treating that incomplete local snapshot as authoritative.
 

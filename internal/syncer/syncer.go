@@ -25,6 +25,7 @@ type GitHubClient interface {
 	ListIssueComments(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error)
 	ListPullReviews(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error)
 	ListPullReviewComments(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error)
+	ListPullReviewThreads(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error)
 	ListPullFiles(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error)
 	ListPullCommits(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error)
 	ListCommitCheckRuns(ctx context.Context, owner, repo, ref string, reporter gh.Reporter) ([]map[string]any, error)
@@ -51,23 +52,24 @@ type Options struct {
 }
 
 type Stats struct {
-	Repository         string `json:"repository"`
-	ThreadsSynced      int    `json:"threads_synced"`
-	IssuesSynced       int    `json:"issues_synced"`
-	PullRequestsSynced int    `json:"pull_requests_synced"`
-	CommentsSynced     int    `json:"comments_synced"`
-	PRDetailsSynced    int    `json:"pr_details_synced"`
-	PRFilesSynced      int    `json:"pr_files_synced"`
-	PRCommitsSynced    int    `json:"pr_commits_synced"`
-	PRChecksSynced     int    `json:"pr_checks_synced"`
-	WorkflowRunsSynced int    `json:"workflow_runs_synced"`
-	ThreadsClosed      int    `json:"threads_closed"`
-	RequestedSince     string `json:"requested_since,omitempty"`
-	Limit              int    `json:"limit,omitempty"`
-	Numbers            []int  `json:"numbers,omitempty"`
-	MetadataOnly       bool   `json:"metadata_only"`
-	StartedAt          string `json:"started_at"`
-	FinishedAt         string `json:"finished_at"`
+	Repository          string `json:"repository"`
+	ThreadsSynced       int    `json:"threads_synced"`
+	IssuesSynced        int    `json:"issues_synced"`
+	PullRequestsSynced  int    `json:"pull_requests_synced"`
+	CommentsSynced      int    `json:"comments_synced"`
+	ReviewThreadsSynced int    `json:"review_threads_synced"`
+	PRDetailsSynced     int    `json:"pr_details_synced"`
+	PRFilesSynced       int    `json:"pr_files_synced"`
+	PRCommitsSynced     int    `json:"pr_commits_synced"`
+	PRChecksSynced      int    `json:"pr_checks_synced"`
+	WorkflowRunsSynced  int    `json:"workflow_runs_synced"`
+	ThreadsClosed       int    `json:"threads_closed"`
+	RequestedSince      string `json:"requested_since,omitempty"`
+	Limit               int    `json:"limit,omitempty"`
+	Numbers             []int  `json:"numbers,omitempty"`
+	MetadataOnly        bool   `json:"metadata_only"`
+	StartedAt           string `json:"started_at"`
+	FinishedAt          string `json:"finished_at"`
 }
 
 func New(client GitHubClient, st *store.Store) *Syncer {
@@ -162,6 +164,11 @@ func (s *Syncer) Sync(ctx context.Context, options Options) (Stats, error) {
 				stats.CommentsSynced += len(comments)
 			}
 			if options.IncludePRDetails && thread.Kind == "pull_request" {
+				count, err := s.syncPullReviewThreads(ctx, st, options, thread)
+				if err != nil {
+					return err
+				}
+				stats.ReviewThreadsSynced += count
 				detailStats, err := s.syncPullRequestDetails(ctx, st, options, thread)
 				if err != nil {
 					return err
@@ -392,7 +399,7 @@ func (s *Syncer) syncComments(ctx context.Context, options Options, thread store
 	var comments []store.Comment
 	for _, row := range rows {
 		comment := mapComment(thread.ID, row.kind, row.raw)
-		if comment.Body == "" {
+		if comment.Body == "" && row.kind != "pull_review" {
 			continue
 		}
 		if _, err := s.store.UpsertComment(ctx, comment); err != nil {
@@ -401,6 +408,57 @@ func (s *Syncer) syncComments(ctx context.Context, options Options, thread store
 		comments = append(comments, comment)
 	}
 	return comments, nil
+}
+
+func (s *Syncer) syncPullReviewThreads(ctx context.Context, st *store.Store, options Options, thread store.Thread) (int, error) {
+	rows, err := s.client.ListPullReviewThreads(ctx, options.Owner, options.Repo, thread.Number, options.Reporter)
+	if err != nil {
+		options.Reporter.Printf("[sync] review threads skipped number=%d err=%v", thread.Number, err)
+		return 0, nil
+	}
+	fetchedAt := s.now().Format(time.RFC3339Nano)
+	threads := make([]store.PullRequestReviewThread, 0, len(rows))
+	for _, row := range rows {
+		mapped := mapPullReviewThread(thread.ID, row, fetchedAt)
+		if mapped.ReviewThreadID == "" {
+			continue
+		}
+		threads = append(threads, mapped)
+	}
+	if err := st.UpsertPullRequestReviewThreads(ctx, thread.ID, fetchedAt, threads); err != nil {
+		return 0, err
+	}
+	return len(threads), nil
+}
+
+func mapPullReviewThread(threadID int64, row map[string]any, fetchedAt string) store.PullRequestReviewThread {
+	comments := mapAnySlice(row["comments"], "nodes")
+	first := map[string]any{}
+	if len(comments) > 0 {
+		first = comments[0]
+	}
+	firstAuthor := mapValue(first["author"])
+	return store.PullRequestReviewThread{
+		ThreadID:              threadID,
+		ReviewThreadID:        stringValue(row["id"]),
+		Path:                  stringValue(row["path"]),
+		Line:                  intValue(row["line"]),
+		StartLine:             intValue(row["startLine"]),
+		IsResolved:            boolValue(row["isResolved"]),
+		IsOutdated:            boolValue(row["isOutdated"]),
+		ViewerCanResolve:      boolValue(row["viewerCanResolve"]),
+		ViewerCanUnresolve:    boolValue(row["viewerCanUnresolve"]),
+		ViewerCanReply:        boolValue(row["viewerCanReply"]),
+		FirstAuthorLogin:      stringValue(firstAuthor["login"]),
+		FirstAuthorType:       stringValue(firstAuthor["__typename"]),
+		FirstCommentBody:      stringValue(first["body"]),
+		FirstCommentURL:       stringValue(first["url"]),
+		FirstCommentCreatedAt: stringValue(first["createdAt"]),
+		FirstCommentUpdatedAt: stringValue(first["updatedAt"]),
+		CommentsJSON:          mustJSON(comments),
+		RawJSON:               mustJSON(row),
+		FetchedAt:             fetchedAt,
+	}
 }
 
 type commentRow struct {
@@ -443,6 +501,41 @@ func typeFromUser(value any) string {
 		return ""
 	}
 	return stringValue(user["type"])
+}
+
+func boolValue(value any) bool {
+	typed, ok := value.(bool)
+	return ok && typed
+}
+
+func mapValue(value any) map[string]any {
+	typed, ok := value.(map[string]any)
+	if !ok {
+		return map[string]any{}
+	}
+	return typed
+}
+
+func mapAnySlice(value any, path ...string) []map[string]any {
+	current := value
+	for _, key := range path {
+		current = mapValue(current)[key]
+	}
+	raw, ok := current.([]map[string]any)
+	if ok {
+		return raw
+	}
+	items, ok := current.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if mapped, ok := item.(map[string]any); ok {
+			out = append(out, mapped)
+		}
+	}
+	return out
 }
 
 func contentHash(values ...string) string {

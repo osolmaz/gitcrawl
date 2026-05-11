@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +67,220 @@ func TestGHShimFallsBackForUnsupportedRead(t *testing.T) {
 		if got := strings.TrimSpace(stdout.String()); got != want {
 			t.Fatalf("fallback output for %s = %q, want %q", fields, got, want)
 		}
+	}
+}
+
+func TestGHShimPRStatusCompactUsesLocalCache(t *testing.T) {
+	ctx := context.Background()
+	configPath := seedGHShimRepo(t, ctx)
+	t.Setenv("GITCRAWL_GH_AUTO_HYDRATE", "0")
+
+	run := New()
+	var stdout bytes.Buffer
+	run.Stdout = &stdout
+	err := run.Run(ctx, []string{
+		"--config", configPath,
+		"gh", "pr", "status", "12",
+		"-R", "openclaw/openclaw",
+		"--compact",
+	})
+	if err == nil {
+		t.Fatal("expected not-ready exit")
+	}
+	if got := ExitCode(err); got != 1 {
+		t.Fatalf("exit code = %d, want 1: %v", got, err)
+	}
+	var row map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &row); err != nil {
+		t.Fatalf("decode compact status: %v\n%s", err, stdout.String())
+	}
+	if row["checks"] != "pass" || int(row["number"].(float64)) != 12 {
+		t.Fatalf("compact status = %#v", row)
+	}
+	reasons := row["blocking_reasons"].([]any)
+	if len(reasons) == 0 {
+		t.Fatalf("missing blocking reasons: %#v", row)
+	}
+}
+
+func TestGHShimPRStatusAutoHydratesIncompleteCacheAndCountsBodylessApproval(t *testing.T) {
+	ctx := context.Background()
+	configPath := seedGHShimRepo(t, ctx)
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	st, err := store.Open(ctx, cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	for _, table := range []string{"pull_request_review_thread_syncs", "pull_request_review_threads", "pull_request_checks", "pull_request_commits", "pull_request_files", "pull_request_details", "github_workflow_runs", "comments"} {
+		if _, err := st.DB().ExecContext(ctx, "delete from "+table); err != nil {
+			t.Fatalf("clear %s: %v", table, err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	var sawGraphQL bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/openclaw/openclaw":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 123, "open_issues_count": 1})
+		case "/repos/openclaw/openclaw/issues/12":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": 12, "number": 12, "state": "open", "title": "Manifest cache update",
+				"body": "", "html_url": "https://github.com/openclaw/openclaw/pull/12",
+				"labels": []map[string]any{}, "assignees": []map[string]any{},
+				"user":         map[string]any{"login": "bob", "type": "User"},
+				"pull_request": map[string]any{"url": "https://api.github.test/repos/openclaw/openclaw/pulls/12"},
+			})
+		case "/repos/openclaw/openclaw/issues/12/comments":
+			_ = json.NewEncoder(w).Encode([]map[string]any{})
+		case "/repos/openclaw/openclaw/pulls/12/reviews":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"id": 9001, "body": "", "state": "APPROVED", "commit_id": "auto123",
+				"submitted_at": "2026-04-27T02:20:00Z", "user": map[string]any{"login": "alice", "type": "User"},
+			}})
+		case "/repos/openclaw/openclaw/pulls/12/comments":
+			_ = json.NewEncoder(w).Encode([]map[string]any{})
+		case "/graphql":
+			sawGraphQL = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
+				"reviewThreads": map[string]any{"nodes": []map[string]any{}, "pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""}},
+			}}}})
+		case "/repos/openclaw/openclaw/pulls/12":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"number": 12, "head": map[string]any{"sha": "auto123", "ref": "auto-branch", "repo": map[string]any{"full_name": "openclaw/openclaw"}},
+				"base": map[string]any{"sha": "base123"}, "mergeable_state": "clean", "changed_files": 1,
+			})
+		case "/repos/openclaw/openclaw/pulls/12/files", "/repos/openclaw/openclaw/pulls/12/commits":
+			_ = json.NewEncoder(w).Encode([]map[string]any{})
+		case "/repos/openclaw/openclaw/commits/auto123/check-runs":
+			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []map[string]any{{"name": "auto-test", "status": "completed", "conclusion": "success"}}})
+		case "/repos/openclaw/openclaw/actions/runs":
+			_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{}})
+		default:
+			t.Fatalf("unexpected request: %s", r.URL.String())
+		}
+	}))
+	defer server.Close()
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("GITCRAWL_GITHUB_BASE_URL", server.URL)
+	t.Setenv("GITCRAWL_GH_PATH", "/tmp/no-real-gh")
+
+	run := New()
+	var stdout bytes.Buffer
+	run.Stdout = &stdout
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "pr", "status", "12", "-R", "openclaw/openclaw", "--compact"}); err != nil {
+		t.Fatalf("status should be ready after auto-hydrate: %v\n%s", err, stdout.String())
+	}
+	var row map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &row); err != nil {
+		t.Fatalf("decode status: %v\n%s", err, stdout.String())
+	}
+	if !sawGraphQL || row["is_merge_ready"] != true || int(row["approvals"].(float64)) != 1 {
+		t.Fatalf("status did not hydrate/count approval: sawGraphQL=%t row=%#v", sawGraphQL, row)
+	}
+}
+
+func TestGHShimPRStatusDisabledAutoHydrateDoesNotRefreshIncompleteCache(t *testing.T) {
+	ctx := context.Background()
+	configPath := seedGHShimRepo(t, ctx)
+	var called bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		t.Fatalf("unexpected hydrate request: %s", r.URL.String())
+	}))
+	defer server.Close()
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("GITCRAWL_GITHUB_BASE_URL", server.URL)
+	t.Setenv("GITCRAWL_GH_AUTO_HYDRATE", "0")
+
+	run := New()
+	var stdout bytes.Buffer
+	run.Stdout = &stdout
+	err := run.Run(ctx, []string{
+		"--config", configPath,
+		"gh", "pr", "status", "12",
+		"-R", "openclaw/openclaw",
+		"--compact",
+	})
+	if err == nil || ExitCode(err) != 1 {
+		t.Fatalf("expected local not-ready status, got err=%v stdout=%s", err, stdout.String())
+	}
+	if called {
+		t.Fatal("auto-hydrate was called despite GITCRAWL_GH_AUTO_HYDRATE=0")
+	}
+}
+
+func TestGHShimPRStatusExitCodes(t *testing.T) {
+	base := ghPRStatusResult{
+		Checks: ghPRStatusChecks{OverallStatus: "pass"},
+	}
+	ready := base
+	ready.IsMergeReady = true
+	if got := ghPRStatusExitCode(ready); got != 0 {
+		t.Fatalf("ready exit = %d, want 0", got)
+	}
+	pending := base
+	pending.Checks.OverallStatus = "pending"
+	pending.BlockingReasons = []string{"checks pending"}
+	if got := ghPRStatusExitCode(pending); got != 3 {
+		t.Fatalf("pending exit = %d, want 3", got)
+	}
+	blocked := base
+	blocked.BlockingReasons = []string{"unresolved review threads"}
+	if got := ghPRStatusExitCode(blocked); got != 1 {
+		t.Fatalf("blocked exit = %d, want 1", got)
+	}
+	selected := selectGHPRStatusFields(ghPRStatusResult{
+		IsMergeReady:    true,
+		BlockingReasons: []string{"checks pending"},
+		ReviewThreads:   ghPRStatusReviewThreads{KnownResolution: true},
+	}, "isMergeReady,blockingReasons,reviewThreads")
+	if selected["isMergeReady"] != true || selected["blockingReasons"] == nil || selected["reviewThreads"] == nil {
+		t.Fatalf("camel aliases not selected: %#v", selected)
+	}
+	reviews := summarizePRReviews([]store.Comment{
+		{
+			GitHubID:        "r1",
+			CommentType:     "pull_review",
+			AuthorLogin:     "alice",
+			RawJSON:         `{"state":"CHANGES_REQUESTED","commit_id":"head","submitted_at":"2026-04-27T01:00:00Z"}`,
+			CreatedAtGitHub: "2026-04-27T01:00:00Z",
+		},
+		{
+			GitHubID:        "r2",
+			CommentType:     "pull_review",
+			AuthorLogin:     "alice",
+			RawJSON:         `{"state":"APPROVED","commit_id":"head","submitted_at":"2026-04-27T02:00:00Z"}`,
+			CreatedAtGitHub: "2026-04-27T02:00:00Z",
+		},
+		{
+			GitHubID:        "r3",
+			CommentType:     "pull_review",
+			AuthorLogin:     "bob",
+			RawJSON:         `{"state":"CHANGES_REQUESTED","commit_id":"old","submitted_at":"2026-04-27T03:00:00Z"}`,
+			CreatedAtGitHub: "2026-04-27T03:00:00Z",
+		},
+	}, "head")
+	if reviews.Approvals != 1 || reviews.ChangesRequested != 0 || reviews.StaleChangesRequested != 1 {
+		t.Fatalf("effective review counts = %#v", reviews)
+	}
+	closed := ghPRStatusResult{State: "closed", MergeableState: "clean", Checks: ghPRStatusChecks{OverallStatus: "pass"}, Reviews: ghPRStatusReviews{Approvals: 1}, ReviewThreads: ghPRStatusReviewThreads{KnownResolution: true}}
+	if reasons := ghPRStatusBlockingReasons(closed, false); !slices.Contains(reasons, "not open") {
+		t.Fatalf("closed PR reasons = %#v", reasons)
+	}
+	dirty := ghPRStatusResult{State: "open", MergeableState: "dirty", Checks: ghPRStatusChecks{OverallStatus: "pass"}, Reviews: ghPRStatusReviews{Approvals: 1}, ReviewThreads: ghPRStatusReviewThreads{KnownResolution: true}}
+	if reasons := ghPRStatusBlockingReasons(dirty, false); !slices.Contains(reasons, "merge conflicts") {
+		t.Fatalf("dirty PR reasons = %#v", reasons)
+	}
+	blockedReady := dirty
+	blockedReady.BlockingReasons = ghPRStatusBlockingReasons(blockedReady, false)
+	blockedReady.IsMergeReady = len(blockedReady.BlockingReasons) == 0
+	if ghPRStatusExitCode(blockedReady) == 0 {
+		t.Fatal("unmergeable PR should not exit ready")
 	}
 }
 

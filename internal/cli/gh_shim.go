@@ -25,7 +25,24 @@ func (a *App) runGHShim(ctx context.Context, args []string) error {
 	case "xcache":
 		return a.runGHXCache(args[1:])
 	}
+	runPRStatus := func() error {
+		if err := a.runGHPRStatus(ctx, args[2:], controls); err != nil {
+			if isLocalGHUnsupported(err) {
+				if controls.Cached {
+					return err
+				}
+				return a.execRealGHMaybeCached(ctx, args, controls)
+			}
+			_ = a.incrementGHXCacheCounter("local_hits")
+			return err
+		}
+		_ = a.incrementGHXCacheCounter("local_hits")
+		return nil
+	}
 	if controls.Live {
+		if len(args) >= 2 && args[0] == "pr" && args[1] == "status" {
+			return runPRStatus()
+		}
 		_ = a.incrementGHXCacheCounter("live_bypasses")
 		return a.execRealGHWithMutationTracking(ctx, args)
 	}
@@ -72,6 +89,10 @@ func (a *App) runGHShim(ctx context.Context, args []string) error {
 					}
 					_ = a.incrementGHXCacheCounter("local_hits")
 					return nil
+				}
+			case "status":
+				if args[0] == "pr" {
+					return runPRStatus()
 				}
 			case "list":
 				if err := a.runGHThreadList(ctx, args[0], args[2:]); err != nil {

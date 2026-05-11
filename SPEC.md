@@ -10,7 +10,7 @@ The target is a compact, local SQLite workflow for syncing, searching, clusterin
 
 - local SQLite storage
 - metadata-first GitHub sync for open issues and pull requests
-- optional comment, review, review-comment, and PR code hydration
+- optional comment, review, review-comment, PR code, and PR review-thread hydration
 - canonical thread document building
 - FTS search
 - OpenAI summaries and embeddings
@@ -109,11 +109,14 @@ This compatibility path reads from local SQLite by default. It avoids GitHub RES
 gitcrawl gh search issues|prs <query> -R owner/repo --state open --match comments --json number,title,url
 gitcrawl gh issue view 123 -R owner/repo --json number,title,state,url,body
 gitcrawl gh pr view 123 -R owner/repo --json number,title,state,url,isDraft,author
+gitcrawl gh pr status 123 -R owner/repo --compact
 gitcrawl gh issue list -R owner/repo --state open --search "hot loop" --json number,title,url
 gitcrawl gh pr list -R owner/repo --state open --search "manifest cache" --json number,title,url
 ```
 
-Unsupported commands fall through to the real GitHub CLI. Read-only fallthroughs use a command-aware persistent cache in `cache/gh-shim` for repeated agent calls (`run list/view`, `pr diff/checks/list/status/view`, `issue list/status/view`, `repo view/list`, `release list/view`, `workflow list/view`, `secret list`, `variable get/list`, `project` list/view reads, `ruleset` reads, `gist` reads, `org list`, `label list`, read-only `search` kinds, and GET-only `api`). Actions run/job logs are cached much longer than CI status reads, completed run reads receive longer TTLs, and `xcache stats` records hit rate plus backend misses by command and normalized route so remaining GitHub-heavy patterns are visible. Repeat read failures are cached by default so many agents do not rediscover the same missing release, workflow, or field, with short caps for error entries and rate-limit responses; if GitHub rate-limits a refresh and a stale successful entry exists, the stale entry is served with a warning. Set `GITCRAWL_GH_CACHE_ERRORS=0` to disable error caching. Mutating commands are never cached and invalidate matching cache-tag entries on success. Unknown mutation scope falls back to clearing the fallthrough cache. The shim does not add GitHub write-back behavior of its own; writes remain delegated to `gh`.
+`gitcrawl gh pr status` is the first read for PR triage. It returns a compact readiness summary from local SQLite when possible, including cached check state, approval/changes-requested review state, unresolved review-thread counts, cache age, and blocking reasons. Exit code `0` means clean, `1` means action needed, `2` means error, and `3` means pending.
+
+Unsupported commands fall through to the real GitHub CLI. Read-only fallthroughs use a command-aware persistent cache in `cache/gh-shim` for repeated agent calls (`run list/view`, `pr diff/list/view/checks/status`, `issue list/status/view`, `repo view/list`, `release list/view`, `workflow list/view`, `secret list`, `variable get/list`, `project` list/view reads, `ruleset` reads, `gist` reads, `org list`, `label list`, read-only `search` kinds, and GET-only `api`). Actions run/job logs are cached much longer than CI status reads, completed run reads receive longer TTLs, and `xcache stats` records hit rate plus backend misses by command and normalized route so remaining GitHub-heavy patterns are visible. Repeat read failures are cached by default so many agents do not rediscover the same missing release, workflow, or field, with short caps for error entries and rate-limit responses; if GitHub rate-limits a refresh and a stale successful entry exists, the stale entry is served with a warning. Set `GITCRAWL_GH_CACHE_ERRORS=0` to disable error caching. Mutating commands are never cached and invalidate matching cache-tag entries on success. Unknown mutation scope falls back to clearing the fallthrough cache. The shim does not add GitHub write-back behavior of its own; writes remain delegated to `gh`.
 
 Cache inspection commands:
 

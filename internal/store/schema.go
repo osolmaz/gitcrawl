@@ -182,6 +182,34 @@ create table if not exists pull_request_checks (
   unique(thread_id, name, details_url)
 );
 
+create table if not exists pull_request_review_threads (
+  thread_id integer not null references threads(id) on delete cascade,
+  review_thread_id text not null,
+  path text,
+  line integer not null default 0,
+  start_line integer not null default 0,
+  is_resolved integer not null default 0,
+  is_outdated integer not null default 0,
+  viewer_can_resolve integer not null default 0,
+  viewer_can_unresolve integer not null default 0,
+  viewer_can_reply integer not null default 0,
+  first_author_login text,
+  first_author_type text,
+  first_comment_body text,
+  first_comment_url text,
+  first_comment_created_at text,
+  first_comment_updated_at text,
+  comments_json text not null,
+  raw_json text not null,
+  fetched_at text not null,
+  primary key(thread_id, review_thread_id)
+);
+
+create table if not exists pull_request_review_thread_syncs (
+  thread_id integer primary key references threads(id) on delete cascade,
+  fetched_at text not null
+);
+
 create table if not exists github_workflow_runs (
   repo_id integer not null references repositories(id) on delete cascade,
   run_id text not null,
@@ -472,6 +500,8 @@ create index if not exists idx_thread_changed_files_path on thread_changed_files
 create index if not exists idx_pull_request_details_repo_number on pull_request_details(repo_id, number);
 create index if not exists idx_pull_request_files_path on pull_request_files(path);
 create index if not exists idx_pull_request_checks_thread_status on pull_request_checks(thread_id, status, conclusion);
+create index if not exists idx_pull_request_review_threads_thread_resolved on pull_request_review_threads(thread_id, is_resolved);
+create index if not exists idx_pull_request_review_thread_syncs_fetched on pull_request_review_thread_syncs(fetched_at);
 create index if not exists idx_github_workflow_runs_repo_branch on github_workflow_runs(repo_id, head_branch, run_id);
 create index if not exists idx_github_workflow_runs_repo_sha on github_workflow_runs(repo_id, head_sha, run_id);
 create index if not exists idx_thread_fingerprints_hash on thread_fingerprints(fingerprint_hash);

@@ -25,6 +25,10 @@ func usageErr(err error) error {
 	return &cliError{code: 2, err: err}
 }
 
+func exitErr(code int, err error) error {
+	return &cliError{code: code, err: err}
+}
+
 func notImplemented(command string) error {
 	return fmt.Errorf("%s is not implemented yet", command)
 }

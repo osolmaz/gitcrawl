@@ -120,6 +120,10 @@ func (fakeGitHub) ListPullReviewComments(ctx context.Context, owner, repo string
 	return nil, nil
 }
 
+func (fakeGitHub) ListPullReviewThreads(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error) {
+	return nil, nil
+}
+
 func (fakeGitHub) ListPullFiles(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error) {
 	return nil, nil
 }
@@ -206,7 +210,9 @@ func (pullCommentGitHub) ListPullReviews(ctx context.Context, owner, repo string
 	}
 	return []map[string]any{{
 		"id":         81,
-		"body":       "review body",
+		"body":       "",
+		"state":      "APPROVED",
+		"commit_id":  "head-sha",
 		"created_at": "2026-04-26T00:00:00Z",
 		"updated_at": "2026-04-26T00:01:00Z",
 		"user":       map[string]any{"login": "reviewbot[bot]", "type": "User"},
@@ -226,8 +232,39 @@ func (pullCommentGitHub) ListPullReviewComments(ctx context.Context, owner, repo
 	}}, nil
 }
 
+func (pullCommentGitHub) ListPullReviewThreads(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error) {
+	if number != 8 {
+		return nil, nil
+	}
+	return []map[string]any{{
+		"id":                 "PRRT_8",
+		"path":               "internal/cache.go",
+		"line":               42,
+		"isResolved":         false,
+		"isOutdated":         false,
+		"viewerCanResolve":   true,
+		"viewerCanUnresolve": false,
+		"viewerCanReply":     true,
+		"comments": map[string]any{"nodes": []any{map[string]any{
+			"id":         "PRRC_82",
+			"databaseId": 82,
+			"body":       "line comment",
+			"author":     map[string]any{"login": "alice", "__typename": "Bot"},
+			"path":       "internal/cache.go",
+			"diffHunk":   "@@ cache",
+			"createdAt":  "2026-04-26T00:02:00Z",
+			"updatedAt":  "2026-04-26T00:03:00Z",
+			"url":        "https://github.com/openclaw/gitcrawl/pull/8#discussion_r82",
+		}}},
+	}}, nil
+}
+
 type pullDetailsGitHub struct {
 	fakeGitHub
+}
+
+func (pullDetailsGitHub) ListPullReviewThreads(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error) {
+	return pullCommentGitHub{}.ListPullReviewThreads(ctx, owner, repo, number, reporter)
 }
 
 func (pullDetailsGitHub) ListPullFiles(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error) {
@@ -371,6 +408,19 @@ func TestSyncHydratesPullReviewComments(t *testing.T) {
 	if len(threads) != 1 || threads[0].Kind != "pull_request" {
 		t.Fatalf("threads = %+v", threads)
 	}
+	comments, err := st.ListComments(ctx, threads[0].ID)
+	if err != nil {
+		t.Fatalf("comments: %v", err)
+	}
+	var foundBodylessReview bool
+	for _, comment := range comments {
+		if comment.CommentType == "pull_review" && comment.GitHubID == "81" && comment.Body == "" {
+			foundBodylessReview = true
+		}
+	}
+	if !foundBodylessReview {
+		t.Fatalf("bodyless pull review was not persisted: %+v", comments)
+	}
 }
 
 func TestSyncHydratesPullRequestDetails(t *testing.T) {
@@ -386,7 +436,7 @@ func TestSyncHydratesPullRequestDetails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	if stats.PRDetailsSynced != 1 || stats.PRFilesSynced != 1 || stats.PRCommitsSynced != 1 || stats.PRChecksSynced != 1 || stats.WorkflowRunsSynced != 1 {
+	if stats.ReviewThreadsSynced != 1 || stats.PRDetailsSynced != 1 || stats.PRFilesSynced != 1 || stats.PRCommitsSynced != 1 || stats.PRChecksSynced != 1 || stats.WorkflowRunsSynced != 1 {
 		t.Fatalf("stats = %#v", stats)
 	}
 	repo, err := st.RepositoryByFullName(ctx, "openclaw/gitcrawl")
@@ -406,6 +456,27 @@ func TestSyncHydratesPullRequestDetails(t *testing.T) {
 	}
 	if len(runs) != 1 || runs[0].RunID != "99" {
 		t.Fatalf("runs = %+v", runs)
+	}
+	threads, err := st.ListThreads(ctx, repo.ID, true)
+	if err != nil {
+		t.Fatalf("threads: %v", err)
+	}
+	if len(threads) != 1 {
+		t.Fatalf("threads = %+v", threads)
+	}
+	reviewThreads, err := st.PullRequestReviewThreads(ctx, threads[0].ID)
+	if err != nil {
+		t.Fatalf("review threads: %v", err)
+	}
+	if len(reviewThreads) != 1 || reviewThreads[0].ReviewThreadID != "PRRT_8" {
+		t.Fatalf("review threads = %+v", reviewThreads)
+	}
+	fetchedAt, err := st.PullRequestReviewThreadsFetchedAt(ctx, threads[0].ID)
+	if err != nil {
+		t.Fatalf("review thread marker: %v", err)
+	}
+	if fetchedAt == "" {
+		t.Fatal("missing review thread sync marker")
 	}
 }
 

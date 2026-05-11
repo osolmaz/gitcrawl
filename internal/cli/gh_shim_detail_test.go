@@ -175,7 +175,7 @@ func TestGHShimAutoHydratesPRDetailsOnMiss(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	for _, table := range []string{"pull_request_checks", "pull_request_commits", "pull_request_files", "pull_request_details", "github_workflow_runs", "threads", "repositories"} {
+	for _, table := range []string{"pull_request_review_thread_syncs", "pull_request_review_threads", "pull_request_checks", "pull_request_commits", "pull_request_files", "pull_request_details", "github_workflow_runs", "threads", "repositories"} {
 		if _, err := st.DB().ExecContext(ctx, "delete from "+table); err != nil {
 			t.Fatalf("clear %s: %v", table, err)
 		}
@@ -208,6 +208,10 @@ func TestGHShimAutoHydratesPRDetailsOnMiss(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []map[string]any{{"name": "auto-test", "status": "completed", "conclusion": "success"}}})
 		case "/repos/openclaw/openclaw/actions/runs":
 			_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{{"id": 12345, "head_branch": "auto-branch", "head_sha": "auto123", "status": "completed", "conclusion": "success", "name": "CI"}}})
+		case "/graphql":
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"repository": map[string]any{"pullRequest": map[string]any{
+				"reviewThreads": map[string]any{"nodes": []map[string]any{}, "pageInfo": map[string]any{"hasNextPage": false, "endCursor": ""}},
+			}}}})
 		default:
 			t.Fatalf("unexpected request: %s", r.URL.String())
 		}

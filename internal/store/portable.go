@@ -195,8 +195,8 @@ func (s *Store) canonicalizePortableSchema(ctx context.Context, bodyChars int, s
 	metadata := map[string]string{
 		"schema":       "gitcrawl-portable-sync-v2",
 		"body_chars":   fmt.Sprintf("%d", bodyChars),
-		"capabilities": "body_excerpts,comment_excerpts,pr_details,pr_files,pr_commits,pr_checks,workflow_runs,raw_json_stripped",
-		"includes":     "repositories,threads,comments,pull_request_details,pull_request_files,pull_request_commits,pull_request_checks,github_workflow_runs,thread_fingerprints",
+		"capabilities": "body_excerpts,comment_excerpts,pr_details,pr_files,pr_commits,pr_checks,pr_review_threads,workflow_runs,raw_json_stripped",
+		"includes":     "repositories,threads,comments,pull_request_details,pull_request_files,pull_request_commits,pull_request_checks,pull_request_review_threads,pull_request_review_thread_syncs,github_workflow_runs,thread_fingerprints",
 		"excluded":     "raw_json,documents,fts,vectors,code_snapshots,cluster_events,run_history,similarity_edges,blobs",
 		"exported_at":  time.Now().UTC().Format(timeLayout),
 		"source_path":  s.path,
@@ -238,6 +238,7 @@ func (s *Store) clearPortableRawJSON(ctx context.Context) (int64, error) {
 		{table: "pull_request_files", name: "raw_json"},
 		{table: "pull_request_commits", name: "raw_json"},
 		{table: "pull_request_checks", name: "raw_json"},
+		{table: "pull_request_review_threads", name: "raw_json"},
 		{table: "github_workflow_runs", name: "raw_json"},
 	} {
 		if !s.hasColumn(ctx, column.table, column.name) {
