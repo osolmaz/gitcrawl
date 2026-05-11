@@ -39,6 +39,10 @@ Targeted refresh:
 gitcrawl sync owner/repo --numbers 123,456 --with pr-details
 ```
 
+`--with pr-details` hydrates PR files, commits, checks, workflow runs, and
+review-thread resolution state. Use it when cached PR status reports missing PR
+details, unknown checks, or unknown review-thread resolution.
+
 For agent-driven discovery, prefer bounded freshness:
 
 ```bash
@@ -71,6 +75,16 @@ gitcrawl gh pr checks <number-or-url> -R owner/repo --json name,state,conclusion
 ```
 
 `pr status` exits `0` clean, `1` action needed, `2` error, or `3` pending. Use `--live` before final merge/comment decisions when liveness matters; it refreshes exact PR details/review threads, then returns the same normalized status shape. Use `--cached` when measuring local cache coverage.
+
+Readiness is conservative: non-open PRs, drafts, failing/unknown checks,
+pending checks, merge conflicts or blocked/unknown mergeability, unresolved or
+unknown review threads, active requested changes, and missing approval block
+ready. Bodyless approvals count. Review state is the latest non-stale decision
+per reviewer, so a later approval supersedes an earlier changes-requested.
+
+Default `pr status` may auto-hydrate when the PR row exists but PR details or
+review-thread markers are missing. `GITCRAWL_GH_AUTO_HYDRATE=0` and `--cached`
+keep it local-only.
 
 ## SQL
 
