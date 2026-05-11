@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.3.4 - Unreleased
+
 ## 0.3.3 - 2026-05-11
 
 - Add cache-backed `gh pr status` readiness summaries with compact JSON, agent-oriented exit codes, and exact PR hydration that stores GitHub review threads instead of relying only on flattened review comments.
