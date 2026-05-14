@@ -98,6 +98,16 @@ go build -ldflags "-X github.com/openclaw/gitcrawl/internal/cli.version=$(git de
 ./bin/gitcrawl --version
 ```
 
+Docker:
+
+```bash
+docker build -t gitcrawl .
+docker run --rm -e GITHUB_TOKEN -v "$PWD/.gitcrawl:/data" gitcrawl sync owner/repo
+docker run --rm -v "$PWD/.gitcrawl:/data" gitcrawl search issues "hot loop" -R owner/repo
+```
+
+The image stores config, SQLite data, cache, and Git snapshot state under `/data`.
+
 ## Development
 
 ```bash
