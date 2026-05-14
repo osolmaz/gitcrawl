@@ -5,6 +5,7 @@
 bin/
 dist/
 coverage/
+coverage.out
 
 *.db
 *.db-shm
