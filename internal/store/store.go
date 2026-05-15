@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/openclaw/gitcrawl/internal/store/storedb"
 	crawlstore "github.com/vincentkoc/crawlkit/store"
 )
 
@@ -17,6 +18,7 @@ const (
 type Store struct {
 	db      *sql.DB
 	queries dbQueries
+	sqlc    *storedb.Queries
 	path    string
 }
 
@@ -41,7 +43,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	db := base.DB()
-	st := &Store{db: db, path: path}
+	st := &Store{db: db, sqlc: storedb.New(db), path: path}
 	if err := st.migrate(ctx); err != nil {
 		_ = base.Close()
 		return nil, err
@@ -55,7 +57,7 @@ func OpenReadOnly(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	db := base.DB()
-	st := &Store{db: db, path: path}
+	st := &Store{db: db, sqlc: storedb.New(db), path: path}
 	current, err := st.schemaVersion(ctx)
 	if err != nil {
 		_ = base.Close()
@@ -90,12 +92,19 @@ func (s *Store) q() dbQueries {
 	return s.db
 }
 
+func (s *Store) qsql() *storedb.Queries {
+	if s.sqlc != nil {
+		return s.sqlc
+	}
+	return storedb.New(s.q())
+}
+
 func (s *Store) WithTx(ctx context.Context, fn func(*Store) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
-	txStore := &Store{db: s.db, queries: tx, path: s.path}
+	txStore := &Store{db: s.db, queries: tx, sqlc: s.qsql().WithTx(tx), path: s.path}
 	if err := fn(txStore); err != nil {
 		_ = tx.Rollback()
 		return err
