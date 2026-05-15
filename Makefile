@@ -4,6 +4,7 @@ VERSION ?= dev
 .PHONY: build generate-sqlc test test-coverage run clean
 
 build:
+	mkdir -p bin
 	go build -ldflags "-X github.com/openclaw/gitcrawl/internal/cli.version=$(VERSION)" -o bin/$(BINARY) ./cmd/gitcrawl
 
 generate-sqlc:
