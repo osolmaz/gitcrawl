@@ -2,6 +2,7 @@
 
 ## 0.3.5 - Unreleased
 
+- Keep active durable cluster representatives on visible open members instead of closed or hidden historical members.
 - Avoid holding SQLite write transactions open while hydrating PR details from GitHub.
 - Skip PR check-run and workflow-run hydration when GitHub returns no PR head SHA, avoiding broad workflow-run fetches.
 - Ignore cluster graph edges whose endpoints are absent from the visible node set, preventing hidden nodes from merging otherwise separate clusters.

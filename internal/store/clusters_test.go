@@ -527,6 +527,261 @@ func TestSaveDurableClustersAppliesLocalOverrides(t *testing.T) {
 	}
 }
 
+func TestSaveDurableClustersChoosesVisibleRepresentative(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	repoID, err := st.UpsertRepository(ctx, Repository{Owner: "openclaw", Name: "gitcrawl", FullName: "openclaw/gitcrawl", RawJSON: "{}", UpdatedAt: "2026-05-15T00:00:00Z"})
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+	closedID, err := st.UpsertThread(ctx, Thread{
+		RepoID: repoID, GitHubID: "51", Number: 51, Kind: "issue", State: "closed",
+		Title: "closed representative", HTMLURL: "https://github.com/openclaw/gitcrawl/issues/51",
+		LabelsJSON: "[]", AssigneesJSON: "[]", RawJSON: "{}", ContentHash: "hash-51", UpdatedAt: "2026-05-15T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("closed thread: %v", err)
+	}
+	openID, err := st.UpsertThread(ctx, Thread{
+		RepoID: repoID, GitHubID: "52", Number: 52, Kind: "issue", State: "open",
+		Title: "open replacement", HTMLURL: "https://github.com/openclaw/gitcrawl/issues/52",
+		LabelsJSON: "[]", AssigneesJSON: "[]", RawJSON: "{}", ContentHash: "hash-52", UpdatedAt: "2026-05-15T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("open thread: %v", err)
+	}
+	score := 0.75
+	input := DurableClusterInput{
+		StableKey:              "members:51,52",
+		StableSlug:             "cluster-5152",
+		RepresentativeThreadID: closedID,
+		Title:                  "closed representative",
+		Members: []DurableClusterMemberInput{
+			{ThreadID: closedID, Role: "representative"},
+			{ThreadID: openID, Role: "member", ScoreToRepresentative: &score},
+		},
+	}
+	if _, err := st.SaveDurableClusters(ctx, repoID, []DurableClusterInput{input}); err != nil {
+		t.Fatalf("save durable clusters: %v", err)
+	}
+	detail, err := st.ClusterDetail(ctx, ClusterDetailOptions{RepoID: repoID, ClusterID: 1, IncludeClosed: false, MemberLimit: 10})
+	if err != nil {
+		t.Fatalf("cluster detail: %v", err)
+	}
+	if detail.Cluster.RepresentativeThreadID != openID || detail.Cluster.RepresentativeNumber != 52 {
+		t.Fatalf("active cluster should choose visible representative, got %#v", detail.Cluster)
+	}
+	if len(detail.Members) != 1 || detail.Members[0].Thread.ID != openID {
+		t.Fatalf("active detail should hide closed representative, got %#v", detail.Members)
+	}
+}
+
+func TestSaveCompleteDurableClustersRefreshesRepresentativeAfterRetiringStaleClusters(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	repoID, err := st.UpsertRepository(ctx, Repository{Owner: "openclaw", Name: "gitcrawl", FullName: "openclaw/gitcrawl", RawJSON: "{}", UpdatedAt: "2026-05-15T00:00:00Z"})
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+	closedID, err := st.UpsertThread(ctx, Thread{
+		RepoID: repoID, GitHubID: "61", Number: 61, Kind: "issue", State: "closed",
+		Title: "closed representative", HTMLURL: "https://github.com/openclaw/gitcrawl/issues/61",
+		LabelsJSON: "[]", AssigneesJSON: "[]", RawJSON: "{}", ContentHash: "hash-61", UpdatedAt: "2026-05-15T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("closed thread: %v", err)
+	}
+	openID, err := st.UpsertThread(ctx, Thread{
+		RepoID: repoID, GitHubID: "62", Number: 62, Kind: "issue", State: "open",
+		Title: "open replacement", HTMLURL: "https://github.com/openclaw/gitcrawl/issues/62",
+		LabelsJSON: "[]", AssigneesJSON: "[]", RawJSON: "{}", ContentHash: "hash-62", UpdatedAt: "2026-05-15T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("open thread: %v", err)
+	}
+	if _, err := st.SaveDurableClusters(ctx, repoID, []DurableClusterInput{{
+		StableKey:              "old:62",
+		StableSlug:             "old-62",
+		RepresentativeThreadID: openID,
+		Title:                  "old open cluster",
+		Members:                []DurableClusterMemberInput{{ThreadID: openID, Role: "canonical"}},
+	}}); err != nil {
+		t.Fatalf("seed stale durable cluster: %v", err)
+	}
+	score := 0.75
+	if _, err := st.SaveCompleteDurableClusters(ctx, repoID, []DurableClusterInput{{
+		StableKey:              "new:61,62",
+		StableSlug:             "new-6162",
+		RepresentativeThreadID: closedID,
+		Title:                  "new cluster",
+		Members: []DurableClusterMemberInput{
+			{ThreadID: closedID, Role: "representative"},
+			{ThreadID: openID, Role: "member", ScoreToRepresentative: &score},
+		},
+	}}); err != nil {
+		t.Fatalf("save complete durable clusters: %v", err)
+	}
+	detail, err := st.ClusterDetail(ctx, ClusterDetailOptions{RepoID: repoID, ClusterID: 2, IncludeClosed: false, MemberLimit: 10})
+	if err != nil {
+		t.Fatalf("cluster detail: %v", err)
+	}
+	if detail.Cluster.RepresentativeThreadID != openID || detail.Cluster.RepresentativeNumber != 62 {
+		t.Fatalf("complete refresh should choose visible representative after retiring stale clusters, got %#v", detail.Cluster)
+	}
+}
+
+func TestSaveDurableClustersRefreshesRepresentativeAfterDeletingLegacyClusters(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	repoID, err := st.UpsertRepository(ctx, Repository{Owner: "openclaw", Name: "gitcrawl", FullName: "openclaw/gitcrawl", RawJSON: "{}", UpdatedAt: "2026-05-15T00:00:00Z"})
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+	closedID, err := st.UpsertThread(ctx, Thread{
+		RepoID: repoID, GitHubID: "81", Number: 81, Kind: "issue", State: "closed",
+		Title: "closed representative", HTMLURL: "https://github.com/openclaw/gitcrawl/issues/81",
+		LabelsJSON: "[]", AssigneesJSON: "[]", RawJSON: "{}", ContentHash: "hash-81", UpdatedAt: "2026-05-15T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("closed thread: %v", err)
+	}
+	openID, err := st.UpsertThread(ctx, Thread{
+		RepoID: repoID, GitHubID: "82", Number: 82, Kind: "issue", State: "open",
+		Title: "open replacement", HTMLURL: "https://github.com/openclaw/gitcrawl/issues/82",
+		LabelsJSON: "[]", AssigneesJSON: "[]", RawJSON: "{}", ContentHash: "hash-82", UpdatedAt: "2026-05-15T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("open thread: %v", err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `
+		insert into cluster_groups(id, repo_id, stable_key, stable_slug, status, cluster_type, representative_thread_id, title, created_at, updated_at)
+		values(99, ?, 'legacy:82', 'legacy-82', 'active', 'similarity', ?, 'legacy open cluster', ?, ?)
+	`, repoID, openID, "2026-05-15T00:00:00Z", "2026-05-15T00:00:00Z"); err != nil {
+		t.Fatalf("seed legacy cluster: %v", err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `
+		insert into cluster_memberships(cluster_id, thread_id, role, state, added_by, added_reason_json, created_at, updated_at)
+		values(99, ?, 'canonical', 'active', 'system', '{}', ?, ?)
+	`, openID, "2026-05-15T00:00:00Z", "2026-05-15T00:00:00Z"); err != nil {
+		t.Fatalf("seed legacy member: %v", err)
+	}
+
+	score := 0.75
+	if _, err := st.SaveDurableClusters(ctx, repoID, []DurableClusterInput{{
+		StableKey:              "new:81,82",
+		StableSlug:             "new-8182",
+		RepresentativeThreadID: closedID,
+		Title:                  "new cluster",
+		Members: []DurableClusterMemberInput{
+			{ThreadID: closedID, Role: "representative"},
+			{ThreadID: openID, Role: "member", ScoreToRepresentative: &score},
+		},
+	}}); err != nil {
+		t.Fatalf("save durable clusters: %v", err)
+	}
+	var legacyCount int
+	if err := st.DB().QueryRowContext(ctx, `
+		select count(*)
+		from cluster_groups
+		where repo_id = ? and cluster_type = 'similarity'
+	`, repoID).Scan(&legacyCount); err != nil {
+		t.Fatalf("count legacy clusters: %v", err)
+	}
+	if legacyCount != 0 {
+		t.Fatalf("legacy similarity cluster should be deleted, got %d", legacyCount)
+	}
+	var clusterID int64
+	if err := st.DB().QueryRowContext(ctx, `
+		select id
+		from cluster_groups
+		where repo_id = ? and stable_key = 'new:81,82'
+	`, repoID).Scan(&clusterID); err != nil {
+		t.Fatalf("find durable cluster: %v", err)
+	}
+	detail, err := st.ClusterDetail(ctx, ClusterDetailOptions{RepoID: repoID, ClusterID: clusterID, IncludeClosed: false, MemberLimit: 10})
+	if err != nil {
+		t.Fatalf("cluster detail: %v", err)
+	}
+	if detail.Cluster.RepresentativeThreadID != openID || detail.Cluster.RepresentativeNumber != 82 {
+		t.Fatalf("legacy cleanup should refresh visible representative, got %#v", detail.Cluster)
+	}
+}
+
+func TestSaveDurableClustersPreservesLocallyClosedRepresentative(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	repoID, err := st.UpsertRepository(ctx, Repository{Owner: "openclaw", Name: "gitcrawl", FullName: "openclaw/gitcrawl", RawJSON: "{}", UpdatedAt: "2026-05-15T00:00:00Z"})
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+	closedID, err := st.UpsertThread(ctx, Thread{
+		RepoID: repoID, GitHubID: "71", Number: 71, Kind: "issue", State: "closed",
+		Title: "closed canonical", HTMLURL: "https://github.com/openclaw/gitcrawl/issues/71",
+		LabelsJSON: "[]", AssigneesJSON: "[]", RawJSON: "{}", ContentHash: "hash-71", UpdatedAt: "2026-05-15T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("closed thread: %v", err)
+	}
+	openID, err := st.UpsertThread(ctx, Thread{
+		RepoID: repoID, GitHubID: "72", Number: 72, Kind: "issue", State: "open",
+		Title: "open related", HTMLURL: "https://github.com/openclaw/gitcrawl/issues/72",
+		LabelsJSON: "[]", AssigneesJSON: "[]", RawJSON: "{}", ContentHash: "hash-72", UpdatedAt: "2026-05-15T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("open thread: %v", err)
+	}
+	score := 0.5
+	input := DurableClusterInput{
+		StableKey:              "members:71,72",
+		StableSlug:             "cluster-7172",
+		RepresentativeThreadID: closedID,
+		Title:                  "closed canonical",
+		Members: []DurableClusterMemberInput{
+			{ThreadID: closedID, Role: "canonical"},
+			{ThreadID: openID, Role: "member", ScoreToRepresentative: &score},
+		},
+	}
+	if _, err := st.SaveDurableClusters(ctx, repoID, []DurableClusterInput{input}); err != nil {
+		t.Fatalf("save durable cluster: %v", err)
+	}
+	if _, err := st.SetClusterCanonicalLocally(ctx, repoID, 1, 71, "historical canonical"); err != nil {
+		t.Fatalf("set historical canonical: %v", err)
+	}
+	if err := st.CloseClusterLocally(ctx, repoID, 1, "done"); err != nil {
+		t.Fatalf("close cluster: %v", err)
+	}
+	if _, err := st.SaveDurableClusters(ctx, repoID, []DurableClusterInput{input}); err != nil {
+		t.Fatalf("resave locally closed durable cluster: %v", err)
+	}
+	detail, err := st.DurableClusterDetail(ctx, ClusterDetailOptions{RepoID: repoID, ClusterID: 1, IncludeClosed: true, MemberLimit: 10})
+	if err != nil {
+		t.Fatalf("closed cluster detail: %v", err)
+	}
+	if detail.Cluster.RepresentativeThreadID != closedID || detail.Cluster.RepresentativeNumber != 71 {
+		t.Fatalf("locally closed cluster should preserve historical representative, got %#v", detail.Cluster)
+	}
+}
+
 func TestSaveDurableClustersRetiresMissingClusters(t *testing.T) {
 	ctx := context.Background()
 	st, err := Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))

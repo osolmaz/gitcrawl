@@ -760,6 +760,11 @@ func (s *Store) saveDurableClusters(ctx context.Context, repoID int64, inputs []
 			`, repoID); err != nil {
 				return fmt.Errorf("delete legacy similarity clusters: %w", err)
 			}
+			for _, clusterID := range seenClusterIDs {
+				if err := tx.ensureActiveClusterRepresentative(ctx, repoID, clusterID, now); err != nil {
+					return err
+				}
+			}
 		}
 		if _, err := tx.q().ExecContext(ctx, `
 			update cluster_runs
@@ -1153,17 +1158,19 @@ func (s *Store) applyClusterOverrides(ctx context.Context, repoID, clusterID int
 		}
 		if _, err := s.q().ExecContext(ctx, `
 			update cluster_groups
-			set representative_thread_id = ?, updated_at = ?
+			set representative_thread_id = null, updated_at = ?
 			where repo_id = ? and id = ?
-		`, canonicalThreadID.Int64, now, repoID, clusterID); err != nil {
+				and status = 'active'
+				and closed_at is null
+		`, now, repoID, clusterID); err != nil {
 			return fmt.Errorf("apply canonical override representative: %w", err)
 		}
-		return nil
 	}
 	return s.ensureActiveClusterRepresentative(ctx, repoID, clusterID, now)
 }
 
 func (s *Store) ensureActiveClusterRepresentative(ctx context.Context, repoID, clusterID int64, now string) error {
+	visible := durableVisibleMemberPredicate("cluster_groups", "cm", "t")
 	if _, err := s.q().ExecContext(ctx, `
 		update cluster_groups
 		set representative_thread_id = (
@@ -1171,6 +1178,7 @@ func (s *Store) ensureActiveClusterRepresentative(ctx context.Context, repoID, c
 				from cluster_memberships cm
 				join threads t on t.id = cm.thread_id
 				where cm.cluster_id = cluster_groups.id and cm.state = 'active'
+					and `+visible+`
 				order by case cm.role when 'canonical' then 0 when 'representative' then 1 else 2 end,
 					coalesce(cm.score_to_representative, 0) desc,
 					t.number asc
@@ -1178,10 +1186,16 @@ func (s *Store) ensureActiveClusterRepresentative(ctx context.Context, repoID, c
 			),
 			updated_at = ?
 		where repo_id = ? and id = ?
+			and status = 'active'
+			and closed_at is null
 			and (
 				representative_thread_id is null
 				or representative_thread_id not in (
-					select thread_id from cluster_memberships where cluster_id = ? and state = 'active'
+					select cm.thread_id
+					from cluster_memberships cm
+					join threads t on t.id = cm.thread_id
+					where cm.cluster_id = ? and cm.state = 'active'
+						and `+visible+`
 				)
 			)
 	`, now, repoID, clusterID, clusterID); err != nil {
