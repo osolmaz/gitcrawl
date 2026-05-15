@@ -236,11 +236,15 @@ func TestListDisplayClusterSummariesPrefersLatestRawRun(t *testing.T) {
 	}
 	if _, err := st.DB().ExecContext(ctx, `
 		insert into cluster_groups(id, repo_id, stable_key, stable_slug, status, representative_thread_id, title, created_at, updated_at)
-		values(700, ?, 'durable-key', 'durable-slug', 'active', ?, 'Durable title', '2026-04-26T00:00:00Z', '2026-04-26T00:03:00Z');
-		insert into cluster_memberships(cluster_id, thread_id, role, state, added_by, added_reason_json, created_at, updated_at)
-		values(700, ?, 'member', 'active', 'system', '{}', '2026-04-26T00:00:00Z', '2026-04-26T00:00:00Z');
-	`, repoID, durableID, durableID); err != nil {
+		values(70, ?, 'durable-key', 'durable-slug', 'active', ?, 'Durable title', '2026-04-26T00:00:00Z', '2026-04-26T00:03:00Z')
+	`, repoID, durableID); err != nil {
 		t.Fatalf("seed durable cluster: %v", err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `
+		insert into cluster_memberships(cluster_id, thread_id, role, state, added_by, added_reason_json, created_at, updated_at)
+		values(70, ?, 'member', 'active', 'system', '{}', '2026-04-26T00:00:00Z', '2026-04-26T00:00:00Z')
+	`, durableID); err != nil {
+		t.Fatalf("seed durable member: %v", err)
 	}
 
 	activeDisplay, err := st.ListDisplayClusterSummaries(ctx, ClusterSummaryOptions{RepoID: repoID, IncludeClosed: false, MinSize: 1, Limit: 20, Sort: "size"})
@@ -276,8 +280,15 @@ func TestListDisplayClusterSummariesPrefersLatestRawRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list durable clusters: %v", err)
 	}
-	if len(durable) != 1 || durable[0].ID != 700 || durable[0].Source != ClusterSourceDurable {
+	if len(durable) != 1 || durable[0].ID != 70 || durable[0].Source != ClusterSourceDurable {
 		t.Fatalf("durable clusters should remain available, got %#v", durable)
+	}
+	durableDetail, err := st.ClusterDetail(ctx, ClusterDetailOptions{RepoID: repoID, ClusterID: 70, Source: ClusterSourceDurable, IncludeClosed: true, MemberLimit: 10})
+	if err != nil {
+		t.Fatalf("durable detail: %v", err)
+	}
+	if durableDetail.Cluster.Source != ClusterSourceDurable || len(durableDetail.Members) != 1 || durableDetail.Members[0].Thread.Number != 201 {
+		t.Fatalf("source-qualified durable detail should not return raw cluster, got %#v", durableDetail)
 	}
 
 	detail, err := st.ClusterDetail(ctx, ClusterDetailOptions{RepoID: repoID, ClusterID: 70, IncludeClosed: true, MemberLimit: 10})

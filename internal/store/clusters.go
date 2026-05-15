@@ -42,6 +42,7 @@ type ClusterSummaryOptions struct {
 type ClusterDetailOptions struct {
 	RepoID        int64
 	ClusterID     int64
+	Source        string
 	IncludeClosed bool
 	MemberLimit   int
 	BodyChars     int
@@ -449,6 +450,16 @@ func idSetOverlapRatio(left, right map[int64]bool) float64 {
 }
 
 func (s *Store) ClusterDetail(ctx context.Context, options ClusterDetailOptions) (ClusterDetail, error) {
+	source, err := normalizeClusterDetailSource(options.Source)
+	if err != nil {
+		return ClusterDetail{}, err
+	}
+	switch source {
+	case ClusterSourceRun:
+		return s.RunClusterDetail(ctx, options)
+	case ClusterSourceDurable:
+		return s.DurableClusterDetail(ctx, options)
+	}
 	detail, err := s.RunClusterDetail(ctx, options)
 	if err == nil {
 		return detail, nil
@@ -457,6 +468,19 @@ func (s *Store) ClusterDetail(ctx context.Context, options ClusterDetailOptions)
 		return ClusterDetail{}, err
 	}
 	return s.DurableClusterDetail(ctx, options)
+}
+
+func normalizeClusterDetailSource(source string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "", "auto":
+		return "", nil
+	case "run", "raw", ClusterSourceRun:
+		return ClusterSourceRun, nil
+	case "durable", ClusterSourceDurable:
+		return ClusterSourceDurable, nil
+	default:
+		return "", fmt.Errorf("unsupported cluster source %q", source)
+	}
 }
 
 func (s *Store) DurableClusterDetail(ctx context.Context, options ClusterDetailOptions) (ClusterDetail, error) {

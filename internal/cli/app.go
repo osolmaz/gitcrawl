@@ -1541,29 +1541,51 @@ func mergeClusterSummaries(primary, secondary []store.ClusterSummary) []store.Cl
 		return append([]store.ClusterSummary(nil), secondary...)
 	}
 	out := append([]store.ClusterSummary(nil), primary...)
-	seen := make(map[int64]bool, len(out)+len(secondary))
+	seen := make(map[string]bool, len(out)+len(secondary))
 	for _, cluster := range out {
-		seen[cluster.ID] = true
+		seen[clusterSummaryKey(cluster)] = true
 	}
 	for _, cluster := range secondary {
-		if !seen[cluster.ID] {
+		key := clusterSummaryKey(cluster)
+		if !seen[key] {
 			out = append(out, cluster)
-			seen[cluster.ID] = true
+			seen[key] = true
 		}
 	}
 	return out
+}
+
+func clusterSummaryKey(cluster store.ClusterSummary) string {
+	source := strings.TrimSpace(cluster.Source)
+	if source == "" {
+		source = "auto"
+	}
+	return source + ":" + strconv.FormatInt(cluster.ID, 10)
+}
+
+func sameClusterSummary(left, right store.ClusterSummary) bool {
+	if left.ID == 0 || right.ID == 0 || left.ID != right.ID {
+		return false
+	}
+	leftSource := strings.TrimSpace(left.Source)
+	rightSource := strings.TrimSpace(right.Source)
+	if leftSource == "" || rightSource == "" {
+		return true
+	}
+	return leftSource == rightSource
 }
 
 func (a *App) runClusterDetail(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("cluster-detail", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	clusterIDRaw := fs.String("id", "", "cluster id")
+	sourceRaw := fs.String("source", "", "cluster source: auto|run|durable")
 	memberLimitRaw := fs.String("member-limit", "", "maximum member rows")
 	bodyCharsRaw := fs.String("body-chars", "", "maximum body snippet characters")
 	includeClosed := fs.Bool("include-closed", false, "deprecated; closed cluster members are shown by default")
 	hideClosed := fs.Bool("hide-closed", false, "hide locally closed members")
 	jsonOut := fs.Bool("json", false, "write JSON output")
-	if err := fs.Parse(normalizeCommandArgs(args, map[string]bool{"id": true, "member-limit": true, "body-chars": true})); err != nil {
+	if err := fs.Parse(normalizeCommandArgs(args, map[string]bool{"id": true, "source": true, "member-limit": true, "body-chars": true})); err != nil {
 		return usageErr(err)
 	}
 	a.applyCommandJSON(*jsonOut)
@@ -1589,6 +1611,10 @@ func (a *App) runClusterDetail(ctx context.Context, args []string) error {
 	if bodyChars <= 0 {
 		bodyChars = 280
 	}
+	source, err := parseClusterDetailSource(*sourceRaw)
+	if err != nil {
+		return usageErr(err)
+	}
 
 	rt, err := a.openLocalRuntimeReadOnly(ctx)
 	if err != nil {
@@ -1602,6 +1628,7 @@ func (a *App) runClusterDetail(ctx context.Context, args []string) error {
 	detail, err := rt.Store.ClusterDetail(ctx, store.ClusterDetailOptions{
 		RepoID:        repo.ID,
 		ClusterID:     int64(clusterID),
+		Source:        source,
 		IncludeClosed: *includeClosed || !*hideClosed,
 		MemberLimit:   memberLimit,
 		BodyChars:     bodyChars,
@@ -1614,6 +1641,19 @@ func (a *App) runClusterDetail(ctx context.Context, args []string) error {
 		"cluster":    detail.Cluster,
 		"members":    detail.Members,
 	}, true)
+}
+
+func parseClusterDetailSource(source string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "", "auto":
+		return "", nil
+	case "run", "raw", store.ClusterSourceRun:
+		return store.ClusterSourceRun, nil
+	case "durable", store.ClusterSourceDurable:
+		return store.ClusterSourceDurable, nil
+	default:
+		return "", fmt.Errorf("unsupported cluster source %q", source)
+	}
 }
 
 func (a *App) runRuns(ctx context.Context, args []string) error {
@@ -3468,7 +3508,7 @@ Usage:
 	"cluster-detail": `gitcrawl cluster-detail dumps one cluster and its member rows.
 
 Usage:
-  gitcrawl cluster-detail owner/repo --id N [--member-limit N] [--body-chars N] [--hide-closed] [--json]
+  gitcrawl cluster-detail owner/repo --id N [--source auto|run|durable] [--member-limit N] [--body-chars N] [--hide-closed] [--json]
 `,
 	"neighbors": `gitcrawl neighbors lists vector-nearest local issue and pull request rows.
 

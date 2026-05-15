@@ -187,8 +187,8 @@ func TestTUISelectionAndVisibilityHelperBranches(t *testing.T) {
 				Thread: store.Thread{Number: 909, State: "open"},
 			}},
 		},
-		detailCache: map[int64]store.ClusterDetail{
-			8: {Cluster: store.ClusterSummary{ID: 8}, Members: []store.ClusterMemberDetail{{Thread: store.Thread{Number: 808, State: "open"}}}},
+		detailCache: map[string]store.ClusterDetail{
+			clusterSummaryKey(store.ClusterSummary{ID: 8}): {Cluster: store.ClusterSummary{ID: 8}, Members: []store.ClusterMemberDetail{{Thread: store.Thread{Number: 808, State: "open"}}}},
 		},
 		memberRows: []memberRow{
 			{label: "header"},
@@ -247,7 +247,7 @@ func TestTUIJumpToThreadNumberLoadsClusterFromStore(t *testing.T) {
 		ctx:         context.Background(),
 		store:       st,
 		repoID:      repoID,
-		detailCache: map[int64]store.ClusterDetail{},
+		detailCache: map[string]store.ClusterDetail{},
 		payload:     clusterBrowserPayload{Limit: 1, Sort: "recent"},
 		minSize:     99,
 	}
@@ -265,12 +265,37 @@ func TestTUIJumpToThreadNumberLoadsClusterFromStore(t *testing.T) {
 	if model.memberIndex < 0 || model.memberRows[model.memberIndex].thread().Number != 202 {
 		t.Fatalf("member rows index=%d rows=%+v", model.memberIndex, model.memberRows)
 	}
-	if _, ok := model.detailCache[clusterID]; !ok {
+	if _, ok := model.detailCache[clusterSummaryKey(store.ClusterSummary{ID: clusterID, Source: store.ClusterSourceDurable})]; !ok {
 		t.Fatalf("detail cache missing cluster %d", clusterID)
 	}
 	model.jumpToThreadNumber(999)
 	if model.status == "" || strings.Contains(model.status, "Jumped") {
 		t.Fatalf("missing jump status = %q", model.status)
+	}
+}
+
+func TestTUISameNumericClusterIDsStaySourceScoped(t *testing.T) {
+	raw := store.ClusterSummary{ID: 7, Source: store.ClusterSourceRun, RepresentativeNumber: 101, MemberCount: 2}
+	durable := store.ClusterSummary{ID: 7, Source: store.ClusterSourceDurable, RepresentativeNumber: 201, MemberCount: 1}
+	model := newClusterBrowserModel(context.Background(), nil, 0, clusterBrowserPayload{
+		Clusters: []store.ClusterSummary{raw, durable},
+	})
+	model.detailCache[clusterSummaryKey(raw)] = store.ClusterDetail{
+		Cluster: raw,
+		Members: []store.ClusterMemberDetail{{Thread: store.Thread{Number: 101, State: "open"}}},
+	}
+	model.detailCache[clusterSummaryKey(durable)] = store.ClusterDetail{
+		Cluster: durable,
+		Members: []store.ClusterMemberDetail{{Thread: store.Thread{Number: 201, State: "open"}}},
+	}
+
+	model.selected = 1
+	model.loadSelectedCluster()
+	if model.detail.Cluster.Source != store.ClusterSourceDurable || len(model.detail.Members) != 1 || model.detail.Members[0].Thread.Number != 201 {
+		t.Fatalf("durable selection loaded wrong same-ID detail: %#v", model.detail)
+	}
+	if !model.selectClusterForJump(durable) || model.selected != 1 {
+		t.Fatalf("source-qualified jump selected index %d detail=%#v", model.selected, model.detail.Cluster)
 	}
 }
 
@@ -289,7 +314,7 @@ func TestTUIJumpKeyAndRefreshCommandBranches(t *testing.T) {
 		jumping:     true,
 		payload:     clusterBrowserPayload{Clusters: []store.ClusterSummary{{ID: 1, RepresentativeNumber: 123}}},
 		allClusters: []store.ClusterSummary{{ID: 1, RepresentativeNumber: 123}},
-		detailCache: map[int64]store.ClusterDetail{},
+		detailCache: map[string]store.ClusterDetail{},
 	}
 	next, cmd = model.handleJumpKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil || next.jumping || !strings.Contains(next.status, "outside loaded members") {

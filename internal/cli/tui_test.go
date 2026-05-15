@@ -938,7 +938,7 @@ func TestTUIRefreshPreservesUnlimitedWorkingSet(t *testing.T) {
 
 	model.applyClusterRefresh([]store.ClusterSummary{
 		{ID: 2, Status: "active", MemberCount: 7, UpdatedAt: "2026-04-28T00:00:00Z"},
-	}, 2)
+	}, clusterSummaryKey(store.ClusterSummary{ID: 2}))
 
 	if len(model.payload.Clusters) != 3 {
 		t.Fatalf("refresh collapsed working set to %d clusters: %#v", len(model.payload.Clusters), model.payload.Clusters)
@@ -961,7 +961,7 @@ func TestTUIRefreshHonorsExplicitClusterLimit(t *testing.T) {
 
 	model.applyClusterRefresh([]store.ClusterSummary{
 		{ID: 2, Status: "active", MemberCount: 7, UpdatedAt: "2026-04-28T00:00:00Z"},
-	}, 2)
+	}, clusterSummaryKey(store.ClusterSummary{ID: 2}))
 
 	if len(model.payload.Clusters) != 1 || model.payload.Clusters[0].ID != 2 {
 		t.Fatalf("explicit limit was not honored: %#v", model.payload.Clusters)
@@ -2335,7 +2335,7 @@ func TestTUIJumpToLoadedThreadNumber(t *testing.T) {
 		Sort:       "recent",
 		Clusters:   clusters,
 	})
-	model.detailCache[1] = store.ClusterDetail{
+	model.detailCache[clusterSummaryKey(clusters[0])] = store.ClusterDetail{
 		Cluster: clusters[0],
 		Members: []store.ClusterMemberDetail{{
 			Thread: store.Thread{
@@ -3644,12 +3644,13 @@ func TestTUIAutoRefreshIsQuietUntilClustersChange(t *testing.T) {
 		Clusters:   clusters,
 	})
 	model.status = "Reading detail"
-	model.detailCache[40] = store.ClusterDetail{Cluster: clusters[0]}
+	cacheKey := clusterSummaryKey(clusters[0])
+	model.detailCache[cacheKey] = store.ClusterDetail{Cluster: clusters[0]}
 	model.autoRefreshFromStore()
 	if model.status != "Reading detail" {
 		t.Fatalf("unchanged auto refresh status = %q", model.status)
 	}
-	if _, ok := model.detailCache[40]; !ok {
+	if _, ok := model.detailCache[cacheKey]; !ok {
 		t.Fatal("unchanged auto refresh should not clear detail cache")
 	}
 

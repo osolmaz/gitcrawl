@@ -86,6 +86,7 @@ gitcrawl cluster-explain owner/repo --id 123    # alias
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--id <n>` | _(required)_ | Cluster ID |
+| `--source auto\|run\|durable` | `auto` | Choose latest raw-run cluster IDs or durable cluster IDs when they collide |
 | `--member-limit <n>` | _(no limit)_ | Maximum members to return |
 | `--body-chars <n>` | `280` | Body snippet length per member |
 | `--hide-closed` | _(off)_ | Hide locally closed members |

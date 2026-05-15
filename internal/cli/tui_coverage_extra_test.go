@@ -36,7 +36,7 @@ func TestTUIRemainingActionAndErrorBranches(t *testing.T) {
 		MinSize:    1,
 		Clusters:   []store.ClusterSummary{cluster},
 	})
-	model.detailCache[7] = detail
+	model.detailCache[clusterSummaryKey(cluster)] = detail
 	model.loadSelectedCluster()
 	model.memberIndex = 0
 	model.neighborCache[thread.ID] = []tuiNeighbor{{Thread: thread, Score: 0.9}}
@@ -126,7 +126,7 @@ func TestTUIRemainingHelperBranches(t *testing.T) {
 	if _, ok := model.clusterFromWorkingSet(999); ok {
 		t.Fatal("missing working-set cluster should not resolve")
 	}
-	model.applyClusterRefresh(nil, 0)
+	model.applyClusterRefresh(nil, "")
 	if model.payload.Clusters == nil {
 		t.Fatal("nil refresh should normalize clusters")
 	}

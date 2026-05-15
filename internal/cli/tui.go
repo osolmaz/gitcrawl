@@ -147,7 +147,7 @@ type clusterBrowserModel struct {
 	wheelSeq         int
 	detailView       viewport.Model
 	searchInput      textinput.Model
-	detailCache      map[int64]store.ClusterDetail
+	detailCache      map[string]store.ClusterDetail
 	neighborCache    map[int64][]tuiNeighbor
 	detail           store.ClusterDetail
 	hasDetail        bool
@@ -316,7 +316,7 @@ func newClusterBrowserModel(ctx context.Context, st *store.Store, repoID int64, 
 		memberIndex:   -1,
 		detailView:    viewport.New(1, 1),
 		searchInput:   search,
-		detailCache:   map[int64]store.ClusterDetail{},
+		detailCache:   map[string]store.ClusterDetail{},
 		neighborCache: map[int64][]tuiNeighbor{},
 	}
 	if payload.DBSource == "remote" && payload.DBRefreshSource != "" && payload.DBRuntimePath != "" {
@@ -528,7 +528,7 @@ func (m *clusterBrowserModel) reopenRuntimeStore() error {
 		_ = m.store.Close()
 	}
 	m.store = next
-	m.detailCache = map[int64]store.ClusterDetail{}
+	m.detailCache = map[string]store.ClusterDetail{}
 	m.neighborCache = map[int64][]tuiNeighbor{}
 	return nil
 }
@@ -2916,18 +2916,23 @@ func (m *clusterBrowserModel) jumpToThreadNumber(number int) {
 		m.status = "Enter a positive issue or PR number"
 		return
 	}
-	clusterID := m.findLoadedClusterIDForThreadNumber(number)
-	if clusterID == 0 && m.store != nil && m.repoID != 0 {
+	cluster, clusterOK := m.findLoadedClusterForThreadNumber(number)
+	if !clusterOK && m.store != nil && m.repoID != 0 {
 		foundID, err := m.store.ClusterIDForThreadNumber(m.ctx, m.repoID, number, true)
 		if err != nil {
 			m.status = err.Error()
 			return
 		}
-		clusterID = foundID
-		if _, ok := m.detailCache[clusterID]; !ok {
+		cluster = store.ClusterSummary{ID: foundID, Source: store.ClusterSourceDurable}
+		cacheKey := clusterSummaryKey(cluster)
+		if cached, ok := m.detailCache[cacheKey]; ok {
+			cluster = cached.Cluster
+			m.ensureClusterInWorkingSet(cluster)
+		} else {
 			detail, err := m.store.ClusterDetail(m.ctx, store.ClusterDetailOptions{
 				RepoID:        m.repoID,
-				ClusterID:     clusterID,
+				ClusterID:     foundID,
+				Source:        store.ClusterSourceDurable,
 				IncludeClosed: true,
 				MemberLimit:   200,
 				BodyChars:     1600,
@@ -2936,16 +2941,18 @@ func (m *clusterBrowserModel) jumpToThreadNumber(number int) {
 				m.status = "Jump failed: " + err.Error()
 				return
 			}
-			m.detailCache[clusterID] = detail
+			m.detailCache[clusterSummaryKey(detail.Cluster)] = detail
 			m.ensureClusterInWorkingSet(detail.Cluster)
+			cluster = detail.Cluster
 		}
+		clusterOK = true
 	}
-	if clusterID == 0 {
+	if !clusterOK || cluster.ID == 0 {
 		m.status = fmt.Sprintf("Thread #%d was not found in loaded clusters", number)
 		return
 	}
-	if !m.selectClusterIDForJump(clusterID) {
-		m.status = fmt.Sprintf("Cluster %d is not available in this view", clusterID)
+	if !m.selectClusterForJump(cluster) {
+		m.status = fmt.Sprintf("Cluster %d is not available in this view", cluster.ID)
 		return
 	}
 	if m.selectMemberByNumber(number) {
@@ -2954,30 +2961,38 @@ func (m *clusterBrowserModel) jumpToThreadNumber(number int) {
 		return
 	}
 	m.focus = focusMembers
-	m.status = fmt.Sprintf("Jumped to cluster %d; #%d is outside loaded members", clusterID, number)
+	m.status = fmt.Sprintf("Jumped to cluster %d; #%d is outside loaded members", cluster.ID, number)
 }
 
 func (m clusterBrowserModel) findLoadedClusterIDForThreadNumber(number int) int64 {
+	cluster, ok := m.findLoadedClusterForThreadNumber(number)
+	if !ok {
+		return 0
+	}
+	return cluster.ID
+}
+
+func (m clusterBrowserModel) findLoadedClusterForThreadNumber(number int) (store.ClusterSummary, bool) {
 	if m.hasDetail {
 		for _, member := range m.detail.Members {
 			if member.Thread.Number == number {
-				return m.detail.Cluster.ID
+				return m.detail.Cluster, true
 			}
 		}
 	}
 	for _, detail := range m.detailCache {
 		for _, member := range detail.Members {
 			if member.Thread.Number == number {
-				return detail.Cluster.ID
+				return detail.Cluster, true
 			}
 		}
 	}
 	for _, cluster := range m.allClusters {
 		if cluster.RepresentativeNumber == number {
-			return cluster.ID
+			return cluster, true
 		}
 	}
-	return 0
+	return store.ClusterSummary{}, false
 }
 
 func (m *clusterBrowserModel) ensureClusterInWorkingSet(cluster store.ClusterSummary) {
@@ -2985,7 +3000,7 @@ func (m *clusterBrowserModel) ensureClusterInWorkingSet(cluster store.ClusterSum
 		return
 	}
 	for _, existing := range m.allClusters {
-		if existing.ID == cluster.ID {
+		if sameClusterSummary(existing, cluster) {
 			return
 		}
 	}
@@ -2993,10 +3008,14 @@ func (m *clusterBrowserModel) ensureClusterInWorkingSet(cluster store.ClusterSum
 }
 
 func (m *clusterBrowserModel) selectClusterIDForJump(clusterID int64) bool {
-	if m.selectVisibleClusterID(clusterID) {
+	return m.selectClusterForJump(store.ClusterSummary{ID: clusterID})
+}
+
+func (m *clusterBrowserModel) selectClusterForJump(cluster store.ClusterSummary) bool {
+	if m.selectVisibleCluster(cluster) {
 		return true
 	}
-	cluster, ok := m.clusterFromWorkingSet(clusterID)
+	cluster, ok := m.clusterSummaryFromWorkingSet(cluster)
 	if !ok {
 		return false
 	}
@@ -3011,12 +3030,16 @@ func (m *clusterBrowserModel) selectClusterIDForJump(clusterID int64) bool {
 		m.payload.Limit = len(m.allClusters)
 	}
 	m.applyClusterFilters()
-	return m.selectVisibleClusterID(clusterID)
+	return m.selectVisibleCluster(cluster)
 }
 
 func (m *clusterBrowserModel) selectVisibleClusterID(clusterID int64) bool {
+	return m.selectVisibleCluster(store.ClusterSummary{ID: clusterID})
+}
+
+func (m *clusterBrowserModel) selectVisibleCluster(target store.ClusterSummary) bool {
 	for index, cluster := range m.payload.Clusters {
-		if cluster.ID == clusterID {
+		if sameClusterSummary(cluster, target) {
 			m.selected = index
 			m.loadSelectedCluster()
 			return true
@@ -3026,8 +3049,12 @@ func (m *clusterBrowserModel) selectVisibleClusterID(clusterID int64) bool {
 }
 
 func (m clusterBrowserModel) clusterFromWorkingSet(clusterID int64) (store.ClusterSummary, bool) {
+	return m.clusterSummaryFromWorkingSet(store.ClusterSummary{ID: clusterID})
+}
+
+func (m clusterBrowserModel) clusterSummaryFromWorkingSet(target store.ClusterSummary) (store.ClusterSummary, bool) {
 	for _, cluster := range m.allClusters {
-		if cluster.ID == clusterID {
+		if sameClusterSummary(cluster, target) {
 			return cluster, true
 		}
 	}
@@ -3055,7 +3082,7 @@ func (m *clusterBrowserModel) refreshFromStore() {
 		m.status = "Refresh failed: " + err.Error()
 		return
 	}
-	relaxedFilters := m.applyClusterRefresh(clusters, m.currentClusterID())
+	relaxedFilters := m.applyClusterRefresh(clusters, m.currentClusterKey())
 	m.status = fmt.Sprintf("Refreshed %d cluster(s)", len(m.payload.Clusters))
 	if relaxedFilters {
 		m.status += " (filters relaxed)"
@@ -3084,7 +3111,7 @@ func (m *clusterBrowserModel) autoRefreshFromStore() {
 	if clusterSummariesSignature(clusters) == m.clusterSignature() {
 		return
 	}
-	m.applyClusterRefresh(clusters, m.currentClusterID())
+	m.applyClusterRefresh(clusters, m.currentClusterKey())
 	m.status = fmt.Sprintf("Auto refreshed %d cluster(s)", len(m.payload.Clusters))
 }
 
@@ -3098,7 +3125,7 @@ func clusterSummariesSignature(clusters []store.ClusterSummary) string {
 	}
 	parts := make([]string, 0, len(clusters))
 	for _, cluster := range clusters {
-		parts = append(parts, fmt.Sprintf("%d:%d:%s", cluster.ID, cluster.MemberCount, cluster.UpdatedAt))
+		parts = append(parts, fmt.Sprintf("%s:%d:%s", clusterSummaryKey(cluster), cluster.MemberCount, cluster.UpdatedAt))
 	}
 	return strings.Join(parts, "|")
 }
@@ -3108,6 +3135,13 @@ func (m clusterBrowserModel) currentClusterID() int64 {
 		return 0
 	}
 	return m.payload.Clusters[m.selected].ID
+}
+
+func (m clusterBrowserModel) currentClusterKey() string {
+	if len(m.payload.Clusters) == 0 || m.selected < 0 || m.selected >= len(m.payload.Clusters) {
+		return ""
+	}
+	return clusterSummaryKey(m.payload.Clusters[m.selected])
 }
 
 func (m clusterBrowserModel) clusterRefreshLimit() int {
@@ -3142,21 +3176,21 @@ func (m *clusterBrowserModel) loadClusterSummariesFromStore() ([]store.ClusterSu
 	return mergeClusterSummaries(clusters, workingSet), nil
 }
 
-func (m *clusterBrowserModel) applyClusterRefresh(clusters []store.ClusterSummary, currentID int64) bool {
+func (m *clusterBrowserModel) applyClusterRefresh(clusters []store.ClusterSummary, currentKey string) bool {
 	if clusters == nil {
 		clusters = []store.ClusterSummary{}
 	}
 	if m.payload.Limit <= 0 && len(clusters) > 0 && len(clusters) < len(m.allClusters) {
 		clusters = mergeClusterSummaries(clusters, m.allClusters)
 	}
-	m.detailCache = map[int64]store.ClusterDetail{}
+	m.detailCache = map[string]store.ClusterDetail{}
 	m.allClusters = append([]store.ClusterSummary(nil), clusters...)
 	m.payload.Clusters = append([]store.ClusterSummary(nil), clusters...)
 	m.applyClusterFilters()
 	relaxedFilters := m.relaxFiltersIfEmpty()
-	if currentID != 0 {
+	if currentKey != "" {
 		for index, cluster := range m.payload.Clusters {
-			if cluster.ID == currentID {
+			if clusterSummaryKey(cluster) == currentKey {
 				m.selected = index
 				m.loadSelectedCluster()
 				break
@@ -3210,7 +3244,7 @@ func (m *clusterBrowserModel) switchRepository(fullName string) {
 	m.repoID = repo.ID
 	m.payload.Repository = repo.FullName
 	m.payload.InferredRepository = false
-	m.detailCache = map[int64]store.ClusterDetail{}
+	m.detailCache = map[string]store.ClusterDetail{}
 	m.neighborCache = map[int64][]tuiNeighbor{}
 	m.allClusters = append([]store.ClusterSummary(nil), clusters...)
 	m.payload.Clusters = append([]store.ClusterSummary(nil), clusters...)
@@ -3312,7 +3346,8 @@ func (m *clusterBrowserModel) loadSelectedCluster() {
 		return
 	}
 	cluster := m.payload.Clusters[m.selected]
-	if cached, ok := m.detailCache[cluster.ID]; ok {
+	cacheKey := clusterSummaryKey(cluster)
+	if cached, ok := m.detailCache[cacheKey]; ok {
 		m.applyClusterDetail(cached)
 		return
 	}
@@ -3322,6 +3357,7 @@ func (m *clusterBrowserModel) loadSelectedCluster() {
 	detail, err := m.store.ClusterDetail(m.ctx, store.ClusterDetailOptions{
 		RepoID:        m.repoID,
 		ClusterID:     cluster.ID,
+		Source:        cluster.Source,
 		IncludeClosed: true,
 		MemberLimit:   200,
 		BodyChars:     1600,
@@ -3330,7 +3366,7 @@ func (m *clusterBrowserModel) loadSelectedCluster() {
 		m.status = err.Error()
 		return
 	}
-	m.detailCache[cluster.ID] = detail
+	m.detailCache[clusterSummaryKey(detail.Cluster)] = detail
 	m.applyClusterDetail(detail)
 }
 
