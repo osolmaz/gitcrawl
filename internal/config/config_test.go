@@ -61,6 +61,10 @@ func TestApplyRuntimeEnvUsesDBEnv(t *testing.T) {
 	if cfg.DBPath != dbPath {
 		t.Fatalf("db path: got %q want %q", cfg.DBPath, dbPath)
 	}
+	wantVectorDir := filepath.Join(dir, "vectors")
+	if cfg.VectorDir != wantVectorDir {
+		t.Fatalf("vector dir: got %q want %q", cfg.VectorDir, wantVectorDir)
+	}
 }
 
 func TestResolveTokens(t *testing.T) {
@@ -167,8 +171,65 @@ func TestApplyRuntimeEnvUsesConfigEnvFallback(t *testing.T) {
 	if cfg.DBPath != dbPath {
 		t.Fatalf("db path: got %q want %q", cfg.DBPath, dbPath)
 	}
+	if cfg.VectorDir != filepath.Join(dir, "vectors") {
+		t.Fatalf("vector dir: got %q want custom db sibling vectors", cfg.VectorDir)
+	}
 	if cfg.OpenAI.SummaryModel != "summary-config" || cfg.OpenAI.EmbedModel != "embed-config" {
 		t.Fatalf("config env models not used: %+v", cfg.OpenAI)
+	}
+}
+
+func TestNormalizeDerivesVectorDirFromCustomDB(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "stores", "gitcrawl.db")
+	cfg := Config{DBPath: dbPath}
+	if err := cfg.Normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if cfg.VectorDir != filepath.Join(dir, "stores", "vectors") {
+		t.Fatalf("vector dir: got %q want sibling vectors", cfg.VectorDir)
+	}
+}
+
+func TestNormalizeMovesDefaultVectorDirWithChangedDB(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "custom.db")
+	cfg := Default()
+	cfg.DBPath = dbPath
+	if err := cfg.Normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if cfg.VectorDir != filepath.Join(dir, "vectors") {
+		t.Fatalf("vector dir: got %q want custom db sibling vectors", cfg.VectorDir)
+	}
+}
+
+func TestNormalizeKeepsExplicitVectorDir(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "custom.db")
+	vectorDir := filepath.Join(dir, "explicit-vectors")
+	cfg := Config{DBPath: dbPath, VectorDir: vectorDir}
+	if err := cfg.Normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if cfg.VectorDir != vectorDir {
+		t.Fatalf("vector dir: got %q want explicit %q", cfg.VectorDir, vectorDir)
+	}
+}
+
+func TestApplyRuntimeEnvKeepsExplicitVectorDir(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "override.db")
+	vectorDir := filepath.Join(dir, "explicit-vectors")
+	t.Setenv("GITCRAWL_DB_PATH", dbPath)
+
+	cfg := Config{VectorDir: vectorDir}
+	if err := cfg.Normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	cfg.ApplyRuntimeEnv()
+	if cfg.VectorDir != vectorDir {
+		t.Fatalf("vector dir: got %q want explicit %q", cfg.VectorDir, vectorDir)
 	}
 }
 

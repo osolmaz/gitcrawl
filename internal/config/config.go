@@ -61,12 +61,11 @@ func Default() Config {
 			LogDir:   filepath.Join(homeDir(), ".config", "gitcrawl", "logs"),
 		}
 	}
-	base := filepath.Dir(paths.DBPath)
 	return Config{
 		Version:        1,
 		DBPath:         paths.DBPath,
 		CacheDir:       paths.CacheDir,
-		VectorDir:      filepath.Join(base, "vectors"),
+		VectorDir:      defaultVectorDirForDB(paths.DBPath),
 		LogDir:         paths.LogDir,
 		EmbeddingBasis: "title_original",
 		GitHub: GitHubConfig{
@@ -139,6 +138,7 @@ func EnsureRuntimeDirs(cfg Config) error {
 
 func (c *Config) Normalize() error {
 	def := Default()
+	vectorDirWasDefault := c.VectorDir == "" || expandHome(c.VectorDir) == expandHome(def.VectorDir)
 	if c.Version == 0 {
 		c.Version = def.Version
 	}
@@ -147,9 +147,6 @@ func (c *Config) Normalize() error {
 	}
 	if c.CacheDir == "" {
 		c.CacheDir = def.CacheDir
-	}
-	if c.VectorDir == "" {
-		c.VectorDir = def.VectorDir
 	}
 	if c.LogDir == "" {
 		c.LogDir = def.LogDir
@@ -183,7 +180,11 @@ func (c *Config) Normalize() error {
 	}
 	c.DBPath = expandHome(c.DBPath)
 	c.CacheDir = expandHome(c.CacheDir)
-	c.VectorDir = expandHome(c.VectorDir)
+	if vectorDirWasDefault {
+		c.VectorDir = defaultVectorDirForDB(c.DBPath)
+	} else {
+		c.VectorDir = expandHome(c.VectorDir)
+	}
 	c.LogDir = expandHome(c.LogDir)
 	return nil
 }
@@ -191,7 +192,11 @@ func (c *Config) Normalize() error {
 func (c *Config) ApplyRuntimeEnv() {
 	c.OpenAI.SummaryModel = c.envOrDefault("GITCRAWL_SUMMARY_MODEL", c.OpenAI.SummaryModel)
 	c.OpenAI.EmbedModel = c.envOrDefault("GITCRAWL_EMBED_MODEL", c.OpenAI.EmbedModel)
+	vectorDirWasDefault := expandHome(c.VectorDir) == defaultVectorDirForDB(expandHome(c.DBPath))
 	c.DBPath = expandHome(c.envOrDefault("GITCRAWL_DB_PATH", c.DBPath))
+	if vectorDirWasDefault {
+		c.VectorDir = defaultVectorDirForDB(c.DBPath)
+	}
 }
 
 func ResolveGitHubToken(cfg Config) TokenResolution {
@@ -232,6 +237,10 @@ func (c Config) configEnv(primary string) string {
 
 func expandHome(path string) string {
 	return crawlconfig.ExpandHome(path)
+}
+
+func defaultVectorDirForDB(dbPath string) string {
+	return filepath.Join(filepath.Dir(expandHome(dbPath)), "vectors")
 }
 
 func homeDir() string {

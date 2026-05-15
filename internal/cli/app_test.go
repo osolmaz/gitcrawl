@@ -24,7 +24,8 @@ import (
 func TestInitWritesConfig(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
-	dbPath := filepath.Join(dir, "gitcrawl.db")
+	dbPath := filepath.Join(dir, "custom", "gitcrawl.db")
+	wantVectorDir := filepath.Join(filepath.Dir(dbPath), "vectors")
 	app := New()
 	var stdout bytes.Buffer
 	app.Stdout = &stdout
@@ -35,6 +36,16 @@ func TestInitWritesConfig(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"config_path"`) {
 		t.Fatalf("expected json init output, got %q", stdout.String())
+	}
+	var result initResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode init output: %v\n%s", err, stdout.String())
+	}
+	if result.VectorDir != wantVectorDir {
+		t.Fatalf("vector dir = %q, want %q", result.VectorDir, wantVectorDir)
+	}
+	if _, err := os.Stat(wantVectorDir); err != nil {
+		t.Fatalf("stat vector dir: %v", err)
 	}
 }
 
