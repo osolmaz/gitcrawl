@@ -2,6 +2,8 @@
 
 ## 0.3.5 - Unreleased
 
+- Ignore non-finite vector similarity scores so malformed embeddings cannot surface as neighbors.
+
 ## 0.3.4 - 2026-05-14
 
 - Docker: add a local image with `/data` persistence and CI smoke coverage.

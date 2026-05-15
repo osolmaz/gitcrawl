@@ -1,6 +1,9 @@
 package vector
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestCosine(t *testing.T) {
 	if got := Cosine([]float64{1, 0}, []float64{1, 0}); got != 1 {
@@ -22,6 +25,17 @@ func TestQuerySortsByScore(t *testing.T) {
 	}
 	if got[0].ThreadID != 1 || got[1].ThreadID != 2 {
 		t.Fatalf("order: %#v", got)
+	}
+}
+
+func TestQueryFiltersNonFiniteScores(t *testing.T) {
+	got := Query([]Item{
+		{ThreadID: 1, Vector: []float64{math.NaN()}},
+		{ThreadID: 2, Vector: []float64{math.Inf(1)}},
+		{ThreadID: 3, Vector: []float64{1}},
+	}, []float64{1}, 10, 0)
+	if len(got) != 1 || got[0].ThreadID != 3 || math.IsNaN(got[0].Score) || math.IsInf(got[0].Score, 0) {
+		t.Fatalf("neighbors = %#v, want only finite thread 3", got)
 	}
 }
 

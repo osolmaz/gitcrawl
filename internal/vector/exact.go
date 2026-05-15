@@ -25,7 +25,7 @@ func Query(items []Item, query []float64, limit int, excludeThreadID int64) []Ne
 			continue
 		}
 		score := Cosine(query, item.Vector)
-		if score <= 0 {
+		if math.IsNaN(score) || math.IsInf(score, 0) || score <= 0 {
 			continue
 		}
 		out = append(out, Neighbor{ThreadID: item.ThreadID, Score: score})
