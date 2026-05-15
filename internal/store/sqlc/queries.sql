@@ -161,7 +161,7 @@ returning id;
 -- name: ListEmbeddingTasks :many
 select t.id, t.number, t.kind, t.title, coalesce(d.body, t.body, '') as body, coalesce(d.raw_text, t.body, '') as raw_text,
   coalesce(d.dedupe_text, t.title || ' ' || coalesce(t.body, '')) as dedupe_text,
-  coalesce((
+  cast(coalesce((
     select tks.key_text
     from thread_key_summaries tks
     join thread_revisions tr on tr.id = tks.thread_revision_id
@@ -169,7 +169,7 @@ select t.id, t.number, t.kind, t.title, coalesce(d.body, t.body, '') as body, co
       and tks.summary_kind in ('llm_key_summary', 'llm_key_3line')
     order by tks.created_at desc, tr.created_at desc, tks.id desc
     limit 1
-  ), '') as key_summary,
+  ), '') as text) as key_summary,
   coalesce(tv.content_hash, '') as existing_hash
 from threads t
 left join documents d on d.thread_id = t.id

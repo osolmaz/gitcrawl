@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+
+	"github.com/openclaw/gitcrawl/internal/store/storedb"
 )
 
 type EmbeddingTask struct {
@@ -42,51 +44,31 @@ func (s *Store) ListEmbeddingTasks(ctx context.Context, options EmbeddingTaskOpt
 		basis = "title_original"
 	}
 	model := strings.TrimSpace(options.Model)
-	where := []string{`t.repo_id = ?`}
-	args := []any{options.RepoID}
-	if !options.IncludeClosed {
-		where = append(where, `t.state = 'open'`, `t.closed_at_local is null`)
-	}
+	var number any
 	if options.Number > 0 {
-		where = append(where, `t.number = ?`)
-		args = append(args, options.Number)
+		number = options.Number
 	}
-	limitSQL := ``
-	if options.Limit > 0 {
-		limitSQL = ` limit ?`
-		args = append(args, options.Limit)
-	}
-	rows, err := s.q().QueryContext(ctx, `
-		select t.id, t.number, t.kind, t.title, coalesce(d.body, t.body, ''), coalesce(d.raw_text, t.body, ''), coalesce(d.dedupe_text, t.title || ' ' || coalesce(t.body, '')),
-		       coalesce((
-		         select tks.key_text
-		         from thread_key_summaries tks
-		         join thread_revisions tr on tr.id = tks.thread_revision_id
-		         where tr.thread_id = t.id
-		           and tks.summary_kind in ('llm_key_summary', 'llm_key_3line')
-		         order by tks.created_at desc, tr.created_at desc, tks.id desc
-		         limit 1
-		       ), ''),
-		       coalesce(tv.content_hash, '')
-		from threads t
-		left join documents d on d.thread_id = t.id
-		left join thread_vectors tv on tv.thread_id = t.id and tv.basis = ? and tv.model = ?
-		where `+strings.Join(where, " and ")+`
-		order by coalesce(t.updated_at_gh, t.updated_at) desc, t.number desc`+limitSQL,
-		append([]any{basis, model}, args...)...)
+	rows, err := s.qsql().ListEmbeddingTasks(ctx, storedb.ListEmbeddingTasksParams{
+		Basis:         basis,
+		Model:         model,
+		RepoID:        options.RepoID,
+		IncludeClosed: boolInt(options.IncludeClosed),
+		Number:        number,
+		RowLimit:      options.Limit,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list embedding tasks: %w", err)
 	}
-	defer rows.Close()
 
 	out := make([]EmbeddingTask, 0)
-	for rows.Next() {
-		var task EmbeddingTask
-		var body, rawText, dedupeText, keySummary, existingHash string
-		if err := rows.Scan(&task.ThreadID, &task.Number, &task.Kind, &task.Title, &body, &rawText, &dedupeText, &keySummary, &existingHash); err != nil {
-			return nil, fmt.Errorf("scan embedding task: %w", err)
+	for _, row := range rows {
+		task := EmbeddingTask{
+			ThreadID: row.ID,
+			Number:   int(row.Number),
+			Kind:     row.Kind,
+			Title:    row.Title,
 		}
-		text, meta, err := embeddingTextForBasisWithMeta(basis, task.Title, body, rawText, dedupeText, keySummary)
+		text, meta, err := embeddingTextForBasisWithMeta(basis, task.Title, row.Body, row.RawText, row.DedupeText, row.KeySummary)
 		if err != nil {
 			return nil, err
 		}
@@ -98,13 +80,10 @@ func (s *Store) ListEmbeddingTasks(ctx context.Context, options EmbeddingTaskOpt
 		task.OriginalTextRunes = meta.OriginalRunes
 		task.TextRunes = meta.Runes
 		task.ContentHash = embeddingContentHash(basis, model, text)
-		if !options.Force && existingHash == task.ContentHash {
+		if !options.Force && row.ExistingHash == task.ContentHash {
 			continue
 		}
 		out = append(out, task)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate embedding tasks: %w", err)
 	}
 	return out, nil
 }
