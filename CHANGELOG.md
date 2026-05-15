@@ -2,6 +2,7 @@
 
 ## 0.3.5 - Unreleased
 
+- Refuse to use the running `gitcrawl` executable as the real `gh` backend, including hard-linked shim paths, to avoid recursive gh-shim fallthrough.
 - Report duplicate OpenAI embedding response indexes explicitly instead of letting a later row overwrite an earlier vector.
 - Keep cosine similarity stable for very large finite vectors instead of dropping them after float overflow.
 - Allow cluster detail reads to target raw-run or durable-cluster IDs explicitly, avoiding collisions between the two ID namespaces.

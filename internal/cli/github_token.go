@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -70,21 +69,4 @@ func candidateRealGHPaths() []string {
 		}
 	}
 	return unique
-}
-
-func usableRealGHPath(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() || info.Mode()&0111 == 0 {
-		return false
-	}
-	exe, err := os.Executable()
-	if err != nil {
-		return true
-	}
-	candidateReal, candidateErr := filepath.EvalSymlinks(path)
-	exeReal, exeErr := filepath.EvalSymlinks(exe)
-	if candidateErr == nil && exeErr == nil && candidateReal == exeReal {
-		return false
-	}
-	return true
 }
