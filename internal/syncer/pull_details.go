@@ -37,9 +37,12 @@ func (s *Syncer) syncPullRequestDetails(ctx context.Context, st *store.Store, op
 			return pullDetailStats{}, err
 		}
 	}
-	runsRaw, err := s.client.ListWorkflowRuns(ctx, options.Owner, options.Repo, gh.ListWorkflowRunsOptions{HeadSHA: headSHA, Limit: 20}, options.Reporter)
-	if err != nil {
-		return pullDetailStats{}, err
+	var runsRaw []map[string]any
+	if headSHA != "" {
+		runsRaw, err = s.client.ListWorkflowRuns(ctx, options.Owner, options.Repo, gh.ListWorkflowRunsOptions{HeadSHA: headSHA, Limit: 20}, options.Reporter)
+		if err != nil {
+			return pullDetailStats{}, err
+		}
 	}
 	detail := mapPullDetail(thread, pull, fetchedAt)
 	files := mapPullFiles(thread.ID, filesRaw, fetchedAt)

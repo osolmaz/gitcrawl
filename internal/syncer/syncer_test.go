@@ -263,6 +263,31 @@ type pullDetailsGitHub struct {
 	fakeGitHub
 }
 
+type emptyHeadPullGitHub struct {
+	fakeGitHub
+	checksCalled bool
+	runsCalled   bool
+}
+
+func (emptyHeadPullGitHub) GetPull(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) (map[string]any, error) {
+	return map[string]any{
+		"number":          number,
+		"head":            map[string]any{"ref": "feature", "repo": map[string]any{"full_name": "openclaw/gitcrawl"}},
+		"base":            map[string]any{"sha": "base-sha"},
+		"mergeable_state": "unknown",
+	}, nil
+}
+
+func (g *emptyHeadPullGitHub) ListCommitCheckRuns(ctx context.Context, owner, repo, ref string, reporter gh.Reporter) ([]map[string]any, error) {
+	g.checksCalled = true
+	return nil, nil
+}
+
+func (g *emptyHeadPullGitHub) ListWorkflowRuns(ctx context.Context, owner, repo string, options gh.ListWorkflowRunsOptions, reporter gh.Reporter) ([]map[string]any, error) {
+	g.runsCalled = true
+	return nil, nil
+}
+
 func (pullDetailsGitHub) ListPullReviewThreads(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error) {
 	return pullCommentGitHub{}.ListPullReviewThreads(ctx, owner, repo, number, reporter)
 }
@@ -477,6 +502,31 @@ func TestSyncHydratesPullRequestDetails(t *testing.T) {
 	}
 	if fetchedAt == "" {
 		t.Fatal("missing review thread sync marker")
+	}
+}
+
+func TestSyncPullRequestDetailsSkipsCheckAndWorkflowFetchWithoutHeadSHA(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	client := &emptyHeadPullGitHub{}
+	s := New(client, st)
+	s.now = func() time.Time { return time.Date(2026, 4, 26, 0, 0, 0, 0, time.UTC) }
+	stats, err := s.Sync(ctx, Options{Owner: "openclaw", Repo: "gitcrawl", Numbers: []int{8}, IncludePRDetails: true})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if stats.PRDetailsSynced != 1 || stats.PRChecksSynced != 0 || stats.WorkflowRunsSynced != 0 {
+		t.Fatalf("stats = %#v", stats)
+	}
+	if client.checksCalled {
+		t.Fatal("check runs should not be fetched without head SHA")
+	}
+	if client.runsCalled {
+		t.Fatal("workflow runs should not be fetched without head SHA")
 	}
 }
 
