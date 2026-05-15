@@ -215,7 +215,7 @@ func (s *Syncer) Sync(ctx context.Context, options Options) (Stats, error) {
 		}
 		return nil
 	}
-	if !options.IncludeComments {
+	if !options.IncludeComments && !options.IncludePRDetails {
 		if err := s.store.WithTx(ctx, persist); err != nil {
 			tracker.Finish(err)
 			return Stats{}, err

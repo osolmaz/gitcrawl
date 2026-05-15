@@ -269,6 +269,32 @@ type emptyHeadPullGitHub struct {
 	runsCalled   bool
 }
 
+type txProbePullDetailsGitHub struct {
+	fakeGitHub
+	st                    *store.Store
+	sawPersistedThread    bool
+	sawPersistedThreadErr error
+}
+
+func (g *txProbePullDetailsGitHub) ListPullFiles(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) ([]map[string]any, error) {
+	storedRepo, err := g.st.RepositoryByFullName(ctx, owner+"/"+repo)
+	if err != nil {
+		g.sawPersistedThreadErr = err
+		return nil, nil
+	}
+	threads, err := g.st.ListThreads(ctx, storedRepo.ID, true)
+	if err != nil {
+		g.sawPersistedThreadErr = err
+		return nil, nil
+	}
+	for _, thread := range threads {
+		if thread.Number == number && thread.Kind == "pull_request" {
+			g.sawPersistedThread = true
+		}
+	}
+	return nil, nil
+}
+
 func (emptyHeadPullGitHub) GetPull(ctx context.Context, owner, repo string, number int, reporter gh.Reporter) (map[string]any, error) {
 	return map[string]any{
 		"number":          number,
@@ -527,6 +553,27 @@ func TestSyncPullRequestDetailsSkipsCheckAndWorkflowFetchWithoutHeadSHA(t *testi
 	}
 	if client.runsCalled {
 		t.Fatal("workflow runs should not be fetched without head SHA")
+	}
+}
+
+func TestSyncPullRequestDetailsDoesNotFetchInsideTransaction(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	client := &txProbePullDetailsGitHub{st: st}
+	s := New(client, st)
+	s.now = func() time.Time { return time.Date(2026, 4, 26, 0, 0, 0, 0, time.UTC) }
+	if _, err := s.Sync(ctx, Options{Owner: "openclaw", Repo: "gitcrawl", Numbers: []int{8}, IncludePRDetails: true}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if client.sawPersistedThreadErr != nil {
+		t.Fatalf("probe persisted thread: %v", client.sawPersistedThreadErr)
+	}
+	if !client.sawPersistedThread {
+		t.Fatal("PR detail fetch ran before the PR thread was committed")
 	}
 }
 

@@ -31,6 +31,15 @@ type PullRequestReviewThread struct {
 }
 
 func (s *Store) UpsertPullRequestReviewThreads(ctx context.Context, threadID int64, fetchedAt string, threads []PullRequestReviewThread) error {
+	if s.queries == nil {
+		return s.WithTx(ctx, func(tx *Store) error {
+			return tx.upsertPullRequestReviewThreads(ctx, threadID, fetchedAt, threads)
+		})
+	}
+	return s.upsertPullRequestReviewThreads(ctx, threadID, fetchedAt, threads)
+}
+
+func (s *Store) upsertPullRequestReviewThreads(ctx context.Context, threadID int64, fetchedAt string, threads []PullRequestReviewThread) error {
 	if err := s.qsql().DeletePullRequestReviewThreads(ctx, threadID); err != nil {
 		return fmt.Errorf("clear pull request review threads: %w", err)
 	}
