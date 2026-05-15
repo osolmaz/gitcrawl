@@ -158,6 +158,11 @@ func TestEmbedErrorBranches(t *testing.T) {
 				Index     int       `json:"index"`
 				Embedding []float64 `json:"embedding"`
 			}{{Index: 4, Embedding: []float64{1}}}})
+		case strings.Contains(r.URL.Path, "duplicate-index"):
+			_ = json.NewEncoder(w).Encode(embeddingResponse{Data: []struct {
+				Index     int       `json:"index"`
+				Embedding []float64 `json:"embedding"`
+			}{{Index: 0, Embedding: []float64{1}}, {Index: 0, Embedding: []float64{2}}}})
 		case strings.Contains(r.URL.Path, "empty-vector"):
 			_ = json.NewEncoder(w).Encode(embeddingResponse{Data: []struct {
 				Index     int       `json:"index"`
@@ -168,10 +173,17 @@ func TestEmbedErrorBranches(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	for _, suffix := range []string{"/api-error", "/wrong-count", "/bad-index", "/empty-vector", ""} {
-		_, err := New(Options{APIKey: "test", BaseURL: server.URL + suffix, Retry: &noRetry}).Embed(context.Background(), "model", []string{"text"})
+	for _, suffix := range []string{"/api-error", "/wrong-count", "/bad-index", "/duplicate-index", "/empty-vector", ""} {
+		inputs := []string{"text"}
+		if suffix == "/duplicate-index" {
+			inputs = []string{"first", "second"}
+		}
+		_, err := New(Options{APIKey: "test", BaseURL: server.URL + suffix, Retry: &noRetry}).Embed(context.Background(), "model", inputs)
 		if err == nil {
 			t.Fatalf("expected error for %q", suffix)
+		}
+		if suffix == "/duplicate-index" && !strings.Contains(err.Error(), "duplicate index 0") {
+			t.Fatalf("duplicate index error = %q", err)
 		}
 	}
 }
