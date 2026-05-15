@@ -250,6 +250,40 @@ func TestGHShimCachePolicyExtraBranches(t *testing.T) {
 	if _, err := resolveRealGHPath(); err == nil || !strings.Contains(err.Error(), "gitcrawl shim") {
 		t.Fatalf("shim path should fail fast, err=%v", err)
 	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("executable: %v", err)
+	}
+	t.Setenv("GITCRAWL_GH_PATH", exe)
+	if _, err := resolveRealGHPath(); err == nil || !strings.Contains(err.Error(), "gitcrawl shim") {
+		t.Fatalf("current executable backend should fail fast, err=%v", err)
+	}
+	hardLink := filepath.Join(t.TempDir(), "gh")
+	if err := os.Link(exe, hardLink); err != nil {
+		t.Fatalf("hard-link executable: %v", err)
+	}
+	t.Setenv("GITCRAWL_GH_PATH", hardLink)
+	if _, err := resolveRealGHPath(); err == nil || !strings.Contains(err.Error(), "gitcrawl shim") {
+		t.Fatalf("hard-linked executable backend should fail fast, err=%v", err)
+	}
+	copiedPath := filepath.Join(t.TempDir(), "gh")
+	copiedBytes, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatalf("read executable: %v", err)
+	}
+	if err := os.WriteFile(copiedPath, copiedBytes, 0o755); err != nil {
+		t.Fatalf("copy executable: %v", err)
+	}
+	t.Setenv("GITCRAWL_GH_PATH", copiedPath)
+	if _, err := resolveRealGHPath(); err == nil || !strings.Contains(err.Error(), "gitcrawl shim") {
+		t.Fatalf("copied executable backend should fail fast, err=%v", err)
+	}
+	if ghBackendModeUsable(0o666, "darwin") {
+		t.Fatal("unix backend without execute bits should be unusable")
+	}
+	if !ghBackendModeUsable(0o666, "windows") {
+		t.Fatal("windows backend should not require unix execute bits")
+	}
 	t.Setenv("GITCRAWL_GH_STALE_GRACE", "3m")
 	if got := ghCommandCacheStaleGrace([]string{"api", "users/octocat"}); got != 3*time.Minute {
 		t.Fatalf("env stale grace = %s", got)
