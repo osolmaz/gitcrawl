@@ -234,7 +234,7 @@ func (c *Client) paginate(ctx context.Context, firstPath string, limit int, expe
 		if limit > 0 && len(out) >= limit {
 			break
 		}
-		nextPath = nextPage(linkHeader)
+		nextPath = nextPage(linkHeader, c.baseURL)
 		if nextPath != "" && c.pageDelay > 0 {
 			select {
 			case <-ctx.Done():
@@ -374,7 +374,7 @@ func rateLimitWait(err error) (time.Duration, bool) {
 	return time.Second, true
 }
 
-func nextPage(linkHeader string) string {
+func nextPage(linkHeader, baseURL string) string {
 	for _, part := range strings.Split(linkHeader, ",") {
 		sections := strings.Split(part, ";")
 		if len(sections) < 2 {
@@ -388,12 +388,27 @@ func nextPage(linkHeader string) string {
 		if err != nil {
 			return ""
 		}
-		if parsed.RawQuery == "" {
-			return parsed.Path
-		}
-		return parsed.Path + "?" + parsed.RawQuery
+		return requestPathFromLink(parsed, baseURL)
 	}
 	return ""
+}
+
+func requestPathFromLink(parsed *url.URL, baseURL string) string {
+	path := parsed.EscapedPath()
+	base, err := url.Parse(strings.TrimRight(strings.TrimSpace(baseURL), "/"))
+	if err == nil && parsed.Host != "" && strings.EqualFold(parsed.Host, base.Host) {
+		basePath := strings.TrimRight(base.EscapedPath(), "/")
+		if basePath != "" && (path == basePath || strings.HasPrefix(path, basePath+"/")) {
+			path = strings.TrimPrefix(path, basePath)
+			if path == "" {
+				path = "/"
+			}
+		}
+	}
+	if parsed.RawQuery == "" {
+		return path
+	}
+	return path + "?" + parsed.RawQuery
 }
 
 func lastPage(linkHeader string) int {

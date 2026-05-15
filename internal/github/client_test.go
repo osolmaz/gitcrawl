@@ -243,10 +243,14 @@ func TestListPullReviewThreadsDecodesGraphQLEnvelope(t *testing.T) {
 
 func TestNextPageAndReporterBranches(t *testing.T) {
 	header := `<https://api.github.test/repos/o/r/issues?page=2&state=open>; rel="next", <https://api.github.test/repos/o/r/issues?page=9>; rel="last"`
-	if got := nextPage(header); got != "/repos/o/r/issues?page=2&state=open" {
+	if got := nextPage(header, "https://api.github.test"); got != "/repos/o/r/issues?page=2&state=open" {
 		t.Fatalf("next page = %q", got)
 	}
-	if got := nextPage(`<bad-url>; rel="last"`); got != "" {
+	gheHeader := `<https://ghe.example/api/v3/repos/o/r/issues?page=2>; rel="next"`
+	if got := nextPage(gheHeader, "https://ghe.example/api/v3"); got != "/repos/o/r/issues?page=2" {
+		t.Fatalf("ghe next page = %q", got)
+	}
+	if got := nextPage(`<bad-url>; rel="last"`, "https://api.github.test"); got != "" {
 		t.Fatalf("bad next page = %q", got)
 	}
 	if got := lastPage(header); got != 9 {
