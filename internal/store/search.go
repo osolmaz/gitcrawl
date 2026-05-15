@@ -9,14 +9,15 @@ import (
 )
 
 type SearchHit struct {
-	ThreadID    int64  `json:"thread_id"`
-	Number      int    `json:"number"`
-	Kind        string `json:"kind"`
-	State       string `json:"state"`
-	Title       string `json:"title"`
-	HTMLURL     string `json:"html_url"`
-	AuthorLogin string `json:"author_login,omitempty"`
-	Snippet     string `json:"snippet"`
+	ThreadID    int64   `json:"thread_id"`
+	Number      int     `json:"number"`
+	Kind        string  `json:"kind"`
+	State       string  `json:"state"`
+	Title       string  `json:"title"`
+	HTMLURL     string  `json:"html_url"`
+	AuthorLogin string  `json:"author_login,omitempty"`
+	Snippet     string  `json:"snippet"`
+	Score       float64 `json:"score,omitempty"`
 }
 
 type ThreadSearchOptions struct {

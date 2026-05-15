@@ -43,6 +43,8 @@ const (
 	bodyRefEvidencePrefixChars = 240
 )
 
+var errNoSemanticVectors = errors.New("no semantic vectors")
+
 var threadReferencePattern = regexp.MustCompile(`(?i)(?:\b([\w.-]+/[\w.-]+)#(\d+)|(?:issues|pull)/(\d+)|#(\d{2,}))`)
 var githubThreadURLPattern = regexp.MustCompile(`(?i)^https?://github\.com/([\w.-]+)/([\w.-]+)/(?:issues|pull)/(\d+)(?:[/?#].*)?$`)
 var ownerRepoThreadPattern = regexp.MustCompile(`(?i)^([\w.-]+)/([\w.-]+)#(\d+)$`)
@@ -509,16 +511,180 @@ func (a *App) runSearch(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	hits, err := rt.Store.SearchDocuments(ctx, repo.ID, strings.TrimSpace(*query), limit)
+	queryText := strings.TrimSpace(*query)
+	hits, effectiveMode, err := a.searchDocuments(ctx, rt, repo.ID, queryText, limit, searchMode)
 	if err != nil {
 		return err
 	}
-	return a.writeOutput("search", map[string]any{
+	payload := map[string]any{
 		"repository": repo.FullName,
-		"query":      strings.TrimSpace(*query),
-		"mode":       searchMode,
+		"query":      queryText,
+		"mode":       effectiveMode,
 		"hits":       hits,
-	}, true)
+	}
+	if effectiveMode != searchMode {
+		payload["requested_mode"] = searchMode
+	}
+	return a.writeOutput("search", payload, true)
+}
+
+func (a *App) searchDocuments(ctx context.Context, rt localRuntime, repoID int64, query string, limit int, mode string) ([]store.SearchHit, string, error) {
+	switch mode {
+	case "keyword":
+		hits, err := rt.Store.SearchDocuments(ctx, repoID, query, limit)
+		return hits, "keyword", err
+	case "semantic":
+		hits, err := a.semanticSearchDocuments(ctx, rt, repoID, query, limit)
+		if errors.Is(err, errNoSemanticVectors) {
+			return nil, "semantic", nil
+		}
+		return hits, "semantic", err
+	case "hybrid":
+		keywordHits, err := rt.Store.SearchDocuments(ctx, repoID, query, limit)
+		if err != nil {
+			return nil, "", err
+		}
+		semanticHits, err := a.semanticSearchDocuments(ctx, rt, repoID, query, limit)
+		if err != nil {
+			if !canFallbackFromSemanticSearch(err) {
+				return nil, "", err
+			}
+			return keywordHits, "keyword", nil
+		}
+		return mergeHybridSearchHits(keywordHits, semanticHits, limit), "hybrid", nil
+	default:
+		return nil, "", fmt.Errorf("unsupported search mode %q", mode)
+	}
+}
+
+func canFallbackFromSemanticSearch(err error) bool {
+	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+}
+
+func (a *App) semanticSearchDocuments(ctx context.Context, rt localRuntime, repoID int64, query string, limit int) ([]store.SearchHit, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	vectorQuery := store.ThreadVectorQuery{
+		RepoID:        repoID,
+		Model:         rt.Config.OpenAI.EmbedModel,
+		Basis:         rt.Config.EmbeddingBasis,
+		IncludeClosed: true,
+	}
+	storedVectors, err := semanticSearchVectors(ctx, rt.Store, vectorQuery)
+	if err != nil {
+		return nil, err
+	}
+	if len(storedVectors) == 0 {
+		return nil, errNoSemanticVectors
+	}
+	token := config.ResolveOpenAIKey(rt.Config)
+	if token.Value == "" {
+		return nil, fmt.Errorf("semantic search requires OpenAI API key: set %s", rt.Config.OpenAI.APIKeyEnv)
+	}
+	client := openai.New(openai.Options{APIKey: token.Value, BaseURL: openAIBaseURL(), Dimensions: rt.Config.OpenAI.EmbedDimensions, Retry: embedRetryOverride()})
+	queryVectors, err := client.Embed(ctx, rt.Config.OpenAI.EmbedModel, []string{query})
+	if err != nil {
+		return nil, err
+	}
+	if len(queryVectors) == 0 {
+		return nil, nil
+	}
+	storedVectors = threadVectorsWithDimensions(storedVectors, len(queryVectors[0]))
+	if len(storedVectors) == 0 {
+		return nil, nil
+	}
+	items := make([]vector.Item, 0, len(storedVectors))
+	for _, stored := range storedVectors {
+		items = append(items, vector.Item{ThreadID: stored.ThreadID, Vector: stored.Vector})
+	}
+	neighbors := vector.Query(items, queryVectors[0], limit, 0)
+	ids := make([]int64, 0, len(neighbors))
+	scoreByThreadID := make(map[int64]float64, len(neighbors))
+	for _, neighbor := range neighbors {
+		ids = append(ids, neighbor.ThreadID)
+		scoreByThreadID[neighbor.ThreadID] = neighbor.Score
+	}
+	threads, err := rt.Store.ThreadsByIDs(ctx, repoID, ids)
+	if err != nil {
+		return nil, err
+	}
+	hits := make([]store.SearchHit, 0, len(neighbors))
+	for _, neighbor := range neighbors {
+		thread, ok := threads[neighbor.ThreadID]
+		if !ok {
+			continue
+		}
+		hits = append(hits, store.SearchHit{
+			ThreadID:    thread.ID,
+			Number:      thread.Number,
+			Kind:        thread.Kind,
+			State:       thread.State,
+			Title:       thread.Title,
+			HTMLURL:     thread.HTMLURL,
+			AuthorLogin: thread.AuthorLogin,
+			Snippet:     thread.Title,
+			Score:       scoreByThreadID[neighbor.ThreadID],
+		})
+	}
+	return hits, nil
+}
+
+func semanticSearchVectors(ctx context.Context, st *store.Store, query store.ThreadVectorQuery) ([]store.ThreadVector, error) {
+	storedVectors, err := st.ListThreadVectorsFiltered(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	if len(storedVectors) > 0 || strings.TrimSpace(query.Basis) == "" {
+		return storedVectors, nil
+	}
+	query.Basis = ""
+	return st.ListThreadVectorsFiltered(ctx, query)
+}
+
+func threadVectorsWithDimensions(vectors []store.ThreadVector, dimensions int) []store.ThreadVector {
+	out := vectors[:0]
+	for _, stored := range vectors {
+		if stored.Dimensions == dimensions && len(stored.Vector) == dimensions {
+			out = append(out, stored)
+		}
+	}
+	return out
+}
+
+func mergeHybridSearchHits(keywordHits, semanticHits []store.SearchHit, limit int) []store.SearchHit {
+	if limit <= 0 {
+		limit = 20
+	}
+	seen := make(map[int64]bool, len(keywordHits)+len(semanticHits))
+	out := make([]store.SearchHit, 0, limit)
+	maxLen := len(keywordHits)
+	if len(semanticHits) > maxLen {
+		maxLen = len(semanticHits)
+	}
+	for index := 0; index < maxLen; index++ {
+		if index < len(keywordHits) {
+			out = appendSearchHit(out, seen, keywordHits[index], limit)
+		}
+		if len(out) >= limit {
+			return out
+		}
+		if index < len(semanticHits) {
+			out = appendSearchHit(out, seen, semanticHits[index], limit)
+		}
+		if len(out) >= limit {
+			return out
+		}
+	}
+	return out
+}
+
+func appendSearchHit(out []store.SearchHit, seen map[int64]bool, hit store.SearchHit, limit int) []store.SearchHit {
+	if seen[hit.ThreadID] || len(out) >= limit {
+		return out
+	}
+	seen[hit.ThreadID] = true
+	return append(out, hit)
 }
 
 func (a *App) runNeighbors(ctx context.Context, args []string) error {
@@ -3281,8 +3447,8 @@ Usage:
 	"search": `gitcrawl search queries local thread documents, or accepts gh-shaped issue and PR search.
 
 Usage:
-  gitcrawl search owner/repo --query text [--mode keyword|semantic] [--limit N] [--json]
-  gitcrawl search issues|prs <query> -R owner/repo [--state open|closed|all] [--json fields] [--limit N]
+  gitcrawl search owner/repo --query text [--mode keyword|semantic|hybrid] [--limit N] [--json]
+  gitcrawl search issues|prs <query> -R owner/repo [--state open|closed|all] [--json fields] [--limit N] [--sync-if-stale duration]
 `,
 	"cluster": `gitcrawl cluster builds durable clusters from local thread vectors.
 

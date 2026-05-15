@@ -2,6 +2,7 @@
 
 ## 0.3.5 - Unreleased
 
+- Make direct `gitcrawl search --mode semantic` use query embeddings and `--mode hybrid` combine semantic and keyword hits instead of relabeling keyword-only search.
 - Remove the search-only `--sync-if-stale` flag from `gitcrawl refresh` help text.
 - Ignore cross-repository `owner/repo#number` references when building deterministic cluster edges for the current repository.
 - Reject non-finite CLI float options such as `NaN` before commands can mutate local cluster state.

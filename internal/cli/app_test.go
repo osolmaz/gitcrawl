@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1567,6 +1568,26 @@ func TestCommandFlowCoversSearchEmbedNeighborsClusterDetailRunsAndRefresh(t *tes
 		t.Fatalf("embed output = %q", stdout.String())
 	}
 
+	semanticSearch := New()
+	stdout.Reset()
+	semanticSearch.Stdout = &stdout
+	if err := semanticSearch.Run(ctx, []string{"--config", configPath, "search", "openclaw/openclaw", "--query", "semantic-only", "--mode", "semantic", "--limit", "2", "--json"}); err != nil {
+		t.Fatalf("semantic search: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"mode": "semantic"`) || !strings.Contains(stdout.String(), `"number": 103`) {
+		t.Fatalf("semantic search output = %q", stdout.String())
+	}
+
+	hybridSearch := New()
+	stdout.Reset()
+	hybridSearch.Stdout = &stdout
+	if err := hybridSearch.Run(ctx, []string{"--config", configPath, "search", "openclaw/openclaw", "--query", "semantic-only", "--mode", "hybrid", "--limit", "2", "--json"}); err != nil {
+		t.Fatalf("hybrid search: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"mode": "hybrid"`) || !strings.Contains(stdout.String(), `"number": 103`) {
+		t.Fatalf("hybrid search output = %q", stdout.String())
+	}
+
 	neighbors := New()
 	stdout.Reset()
 	neighbors.Stdout = &stdout
@@ -1654,6 +1675,39 @@ func TestCommandFlowCoversSearchEmbedNeighborsClusterDetailRunsAndRefresh(t *tes
 	}
 	if len(threads) != 2 {
 		t.Fatalf("threads by ids = %+v", threads)
+	}
+}
+
+func TestHybridSearchSkipsOpenAIWhenNoVectors(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	dbPath := filepath.Join(dir, "gitcrawl.db")
+	if err := New().Run(ctx, []string{"--config", configPath, "init", "--db", dbPath}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	seedCommandFlowStore(t, dbPath)
+
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{{"index": 0, "embedding": []float64{1, 0}}}})
+	}))
+	defer server.Close()
+	t.Setenv("OPENAI_API_KEY", "test-openai-key")
+	t.Setenv("GITCRAWL_OPENAI_BASE_URL", server.URL)
+
+	app := New()
+	var stdout bytes.Buffer
+	app.Stdout = &stdout
+	if err := app.Run(ctx, []string{"--config", configPath, "search", "openclaw/openclaw", "--query", "gateway websocket", "--mode", "hybrid", "--limit", "5", "--json"}); err != nil {
+		t.Fatalf("hybrid search: %v", err)
+	}
+	if atomic.LoadInt32(&calls) != 0 {
+		t.Fatalf("hybrid search made %d OpenAI calls without vectors", calls)
+	}
+	if !strings.Contains(stdout.String(), `"mode": "keyword"`) || !strings.Contains(stdout.String(), `"requested_mode": "hybrid"`) {
+		t.Fatalf("hybrid fallback output = %q", stdout.String())
 	}
 }
 
@@ -3583,6 +3637,45 @@ func TestKeepTopEdgesKeepsOneSidedNearestNeighbors(t *testing.T) {
 	}, 1)
 	if len(edges) != 2 {
 		t.Fatalf("one-sided top-k edges should be kept, got %#v", edges)
+	}
+}
+
+func TestMergeHybridSearchHitsReservesKeywordSlots(t *testing.T) {
+	got := mergeHybridSearchHits(
+		[]store.SearchHit{{ThreadID: 10, Number: 10}, {ThreadID: 20, Number: 20}},
+		[]store.SearchHit{{ThreadID: 30, Number: 30}, {ThreadID: 40, Number: 40}},
+		3,
+	)
+	want := []int{10, 30, 20}
+	if len(got) != len(want) {
+		t.Fatalf("hybrid hits = %#v, want %v", got, want)
+	}
+	for index, hit := range got {
+		if hit.Number != want[index] {
+			t.Fatalf("hybrid hit %d = #%d, want #%d; all=%#v", index, hit.Number, want[index], got)
+		}
+	}
+
+	got = mergeHybridSearchHits(
+		[]store.SearchHit{{ThreadID: 10, Number: 10}},
+		[]store.SearchHit{{ThreadID: 10, Number: 10}, {ThreadID: 30, Number: 30}},
+		3,
+	)
+	want = []int{10, 30}
+	if len(got) != len(want) || got[0].Number != want[0] || got[1].Number != want[1] {
+		t.Fatalf("deduped hybrid hits = %#v, want %v", got, want)
+	}
+}
+
+func TestCanFallbackFromSemanticSearchRejectsContextErrors(t *testing.T) {
+	if canFallbackFromSemanticSearch(context.Canceled) {
+		t.Fatal("canceled semantic search should not fall back to keyword results")
+	}
+	if canFallbackFromSemanticSearch(context.DeadlineExceeded) {
+		t.Fatal("deadline semantic search should not fall back to keyword results")
+	}
+	if !canFallbackFromSemanticSearch(errors.New("missing semantic dependency")) {
+		t.Fatal("ordinary semantic failure should allow keyword fallback")
 	}
 }
 
