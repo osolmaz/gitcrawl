@@ -162,14 +162,8 @@ func (c *Client) ListPullCommits(ctx context.Context, owner, repo string, number
 }
 
 func (c *Client) ListCommitCheckRuns(ctx context.Context, owner, repo, ref string, reporter Reporter) ([]map[string]any, error) {
-	var payload struct {
-		CheckRuns []map[string]any `json:"check_runs"`
-	}
 	path := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs?per_page=100", pathEscape(owner), pathEscape(repo), pathEscape(ref))
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, reporter, &payload); err != nil {
-		return nil, err
-	}
-	return payload.CheckRuns, nil
+	return c.paginateEnvelope(ctx, path, 0, 0, "check_runs", reporter)
 }
 
 func (c *Client) ListWorkflowRuns(ctx context.Context, owner, repo string, options ListWorkflowRunsOptions, reporter Reporter) ([]map[string]any, error) {
@@ -182,20 +176,38 @@ func (c *Client) ListWorkflowRuns(ctx context.Context, owner, repo string, optio
 		values.Set("head_sha", options.HeadSHA)
 	}
 	path := fmt.Sprintf("/repos/%s/%s/actions/runs?%s", pathEscape(owner), pathEscape(repo), values.Encode())
-	var payload struct {
-		WorkflowRuns []map[string]any `json:"workflow_runs"`
-	}
-	if err := c.doJSON(ctx, http.MethodGet, path, nil, reporter, &payload); err != nil {
-		return nil, err
-	}
-	rows := payload.WorkflowRuns
-	if options.Limit > 0 && len(rows) > options.Limit {
-		rows = rows[:options.Limit]
-	}
-	return rows, nil
+	return c.paginateEnvelope(ctx, path, options.Limit, 0, "workflow_runs", reporter)
 }
 
 func (c *Client) paginate(ctx context.Context, firstPath string, limit int, expectedItems int, reporter Reporter) ([]map[string]any, error) {
+	return c.paginatePages(ctx, firstPath, limit, expectedItems, reporter, func(resp *http.Response) ([]map[string]any, error) {
+		var rows []map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+			return nil, fmt.Errorf("decode github page: %w", err)
+		}
+		return rows, nil
+	})
+}
+
+func (c *Client) paginateEnvelope(ctx context.Context, firstPath string, limit int, expectedItems int, field string, reporter Reporter) ([]map[string]any, error) {
+	return c.paginatePages(ctx, firstPath, limit, expectedItems, reporter, func(resp *http.Response) ([]map[string]any, error) {
+		var payload map[string]json.RawMessage
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			return nil, fmt.Errorf("decode github page: %w", err)
+		}
+		raw, ok := payload[field]
+		if !ok {
+			return nil, fmt.Errorf("decode github page: missing %q", field)
+		}
+		var rows []map[string]any
+		if err := json.Unmarshal(raw, &rows); err != nil {
+			return nil, fmt.Errorf("decode github page %q: %w", field, err)
+		}
+		return rows, nil
+	})
+}
+
+func (c *Client) paginatePages(ctx context.Context, firstPath string, limit int, expectedItems int, reporter Reporter, decode func(*http.Response) ([]map[string]any, error)) ([]map[string]any, error) {
 	var out []map[string]any
 	nextPath := firstPath
 	page := 0
@@ -205,14 +217,14 @@ func (c *Client) paginate(ctx context.Context, firstPath string, limit int, expe
 	}
 	for nextPath != "" {
 		page++
-		var rows []map[string]any
 		resp, err := c.do(ctx, http.MethodGet, nextPath, nil, reporter)
 		if err != nil {
 			return nil, err
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		rows, err := decode(resp)
+		if err != nil {
 			_ = resp.Body.Close()
-			return nil, fmt.Errorf("decode github page: %w", err)
+			return nil, err
 		}
 		_ = resp.Body.Close()
 		if limit > 0 && len(out)+len(rows) > limit {
