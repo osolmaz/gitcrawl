@@ -14,6 +14,13 @@ func int64Bool(value int64) bool {
 	return value != 0
 }
 
+func optionalString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
 func repositoryFromDB(repo storedb.Repository) Repository {
 	return Repository{
 		ID:           repo.ID,
