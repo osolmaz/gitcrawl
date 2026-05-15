@@ -612,7 +612,7 @@ func (q *Queries) ListSyncRuns(ctx context.Context, arg ListSyncRunsParams) ([]S
 
 const listThreadsCurrentSchema = `-- name: ListThreadsCurrentSchema :many
 select id, repo_id, github_id, number, kind, state, title, body, author_login, author_type, html_url,
-  labels_json, assignees_json, raw_json, content_hash, is_draft, created_at_gh, updated_at_gh,
+  labels_json, assignees_json, coalesce(raw_json, '') as raw_json, content_hash, is_draft, created_at_gh, updated_at_gh,
   closed_at_gh, merged_at_gh, first_pulled_at, last_pulled_at, updated_at, closed_at_local, close_reason_local
 from threads
 where repo_id = ?1

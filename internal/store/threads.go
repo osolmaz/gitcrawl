@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/openclaw/gitcrawl/internal/store/storedb"
 )
 
 type Thread struct {
@@ -37,40 +39,30 @@ type Thread struct {
 }
 
 func (s *Store) UpsertThread(ctx context.Context, thread Thread) (int64, error) {
-	var id int64
-	err := s.q().QueryRowContext(ctx, `
-		insert into threads(
-			repo_id, github_id, number, kind, state, title, body, author_login, author_type, html_url,
-			labels_json, assignees_json, raw_json, content_hash, is_draft,
-			created_at_gh, updated_at_gh, closed_at_gh, merged_at_gh,
-			first_pulled_at, last_pulled_at, updated_at
-		)
-		values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		on conflict(repo_id, kind, number) do update set
-			github_id=excluded.github_id,
-			state=excluded.state,
-			title=excluded.title,
-			body=excluded.body,
-			author_login=excluded.author_login,
-			author_type=excluded.author_type,
-			html_url=excluded.html_url,
-			labels_json=excluded.labels_json,
-			assignees_json=excluded.assignees_json,
-			raw_json=excluded.raw_json,
-			content_hash=excluded.content_hash,
-			is_draft=excluded.is_draft,
-			created_at_gh=excluded.created_at_gh,
-			updated_at_gh=excluded.updated_at_gh,
-			closed_at_gh=excluded.closed_at_gh,
-			merged_at_gh=excluded.merged_at_gh,
-			last_pulled_at=excluded.last_pulled_at,
-			updated_at=excluded.updated_at
-		returning id
-	`, thread.RepoID, thread.GitHubID, thread.Number, thread.Kind, thread.State, thread.Title, nullString(thread.Body),
-		nullString(thread.AuthorLogin), nullString(thread.AuthorType), thread.HTMLURL, thread.LabelsJSON, thread.AssigneesJSON,
-		thread.RawJSON, thread.ContentHash, boolInt(thread.IsDraft), nullString(thread.CreatedAtGitHub), nullString(thread.UpdatedAtGitHub),
-		nullString(thread.ClosedAtGitHub), nullString(thread.MergedAtGitHub), nullString(thread.FirstPulledAt), nullString(thread.LastPulledAt),
-		thread.UpdatedAt).Scan(&id)
+	id, err := s.qsql().UpsertThread(ctx, storedb.UpsertThreadParams{
+		RepoID:        thread.RepoID,
+		GithubID:      thread.GitHubID,
+		Number:        int64(thread.Number),
+		Kind:          thread.Kind,
+		State:         thread.State,
+		Title:         thread.Title,
+		Body:          nullString(thread.Body),
+		AuthorLogin:   nullString(thread.AuthorLogin),
+		AuthorType:    nullString(thread.AuthorType),
+		HtmlUrl:       thread.HTMLURL,
+		LabelsJson:    thread.LabelsJSON,
+		AssigneesJson: thread.AssigneesJSON,
+		RawJson:       thread.RawJSON,
+		ContentHash:   thread.ContentHash,
+		IsDraft:       int64(boolInt(thread.IsDraft)),
+		CreatedAtGh:   nullString(thread.CreatedAtGitHub),
+		UpdatedAtGh:   nullString(thread.UpdatedAtGitHub),
+		ClosedAtGh:    nullString(thread.ClosedAtGitHub),
+		MergedAtGh:    nullString(thread.MergedAtGitHub),
+		FirstPulledAt: nullString(thread.FirstPulledAt),
+		LastPulledAt:  nullString(thread.LastPulledAt),
+		UpdatedAt:     thread.UpdatedAt,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("upsert thread: %w", err)
 	}
@@ -90,42 +82,31 @@ func (s *Store) MarkOpenThreadClosedFromGitHub(ctx context.Context, thread Threa
 	if thread.State == "" {
 		thread.State = "closed"
 	}
-	result, err := s.q().ExecContext(ctx, `
-		update threads
-		set github_id = ?,
-			state = ?,
-			title = ?,
-			body = ?,
-			author_login = ?,
-			author_type = ?,
-			html_url = ?,
-			labels_json = ?,
-			assignees_json = ?,
-			raw_json = ?,
-			content_hash = ?,
-			is_draft = ?,
-			created_at_gh = ?,
-			updated_at_gh = ?,
-			closed_at_gh = ?,
-			merged_at_gh = ?,
-			last_pulled_at = ?,
-			updated_at = ?
-		where repo_id = ?
-		  and kind = ?
-		  and number = ?
-		  and state = 'open'
-		  and closed_at_local is null
-	`, thread.GitHubID, thread.State, thread.Title, nullString(thread.Body), nullString(thread.AuthorLogin),
-		nullString(thread.AuthorType), thread.HTMLURL, thread.LabelsJSON, thread.AssigneesJSON, thread.RawJSON,
-		thread.ContentHash, boolInt(thread.IsDraft), nullString(thread.CreatedAtGitHub), nullString(thread.UpdatedAtGitHub),
-		nullString(thread.ClosedAtGitHub), nullString(thread.MergedAtGitHub), nullString(thread.LastPulledAt), thread.UpdatedAt,
-		thread.RepoID, thread.Kind, thread.Number)
+	affected, err := s.qsql().MarkOpenThreadClosedFromGitHub(ctx, storedb.MarkOpenThreadClosedFromGitHubParams{
+		GithubID:      thread.GitHubID,
+		State:         thread.State,
+		Title:         thread.Title,
+		Body:          nullString(thread.Body),
+		AuthorLogin:   nullString(thread.AuthorLogin),
+		AuthorType:    nullString(thread.AuthorType),
+		HtmlUrl:       thread.HTMLURL,
+		LabelsJson:    thread.LabelsJSON,
+		AssigneesJson: thread.AssigneesJSON,
+		RawJson:       thread.RawJSON,
+		ContentHash:   thread.ContentHash,
+		IsDraft:       int64(boolInt(thread.IsDraft)),
+		CreatedAtGh:   nullString(thread.CreatedAtGitHub),
+		UpdatedAtGh:   nullString(thread.UpdatedAtGitHub),
+		ClosedAtGh:    nullString(thread.ClosedAtGitHub),
+		MergedAtGh:    nullString(thread.MergedAtGitHub),
+		LastPulledAt:  nullString(thread.LastPulledAt),
+		UpdatedAt:     thread.UpdatedAt,
+		RepoID:        thread.RepoID,
+		Kind:          thread.Kind,
+		Number:        int64(thread.Number),
+	})
 	if err != nil {
 		return false, fmt.Errorf("mark open thread closed from github: %w", err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return false, nil
 	}
 	return affected > 0, nil
 }
@@ -142,6 +123,21 @@ type ThreadListOptions struct {
 }
 
 func (s *Store) ListThreadsFiltered(ctx context.Context, options ThreadListOptions) ([]Thread, error) {
+	if len(options.Numbers) == 0 && s.hasColumn(ctx, "threads", "body") && s.hasColumn(ctx, "threads", "raw_json") {
+		rows, err := s.qsql().ListThreadsCurrentSchema(ctx, storedb.ListThreadsCurrentSchemaParams{
+			RepoID:        options.RepoID,
+			IncludeClosed: boolInt(options.IncludeClosed),
+			RowLimit:      options.Limit,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list threads: %w", err)
+		}
+		out := make([]Thread, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, threadFromCurrentSchemaDB(row))
+		}
+		return out, nil
+	}
 	where := `repo_id = ?`
 	args := []any{options.RepoID}
 	if !options.IncludeClosed {
@@ -196,15 +192,16 @@ func (s *Store) CloseThreadLocally(ctx context.Context, repoID int64, number int
 		reason = "local close"
 	}
 	closedAt := time.Now().UTC().Format(timeLayout)
-	result, err := s.q().ExecContext(ctx, `
-		update threads
-		set closed_at_local = ?, close_reason_local = ?, updated_at = ?
-		where repo_id = ? and number = ?
-	`, closedAt, reason, closedAt, repoID, number)
+	affected, err := s.qsql().CloseThreadLocally(ctx, storedb.CloseThreadLocallyParams{
+		ClosedAt: sql.NullString{String: closedAt, Valid: true},
+		Reason:   sql.NullString{String: reason, Valid: true},
+		RepoID:   repoID,
+		Number:   int64(number),
+	})
 	if err != nil {
 		return fmt.Errorf("close thread locally: %w", err)
 	}
-	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+	if affected == 0 {
 		return fmt.Errorf("thread #%d was not found", number)
 	}
 	return nil
@@ -218,15 +215,15 @@ func (s *Store) ReopenThreadLocally(ctx context.Context, repoID int64, number in
 		return fmt.Errorf("thread number must be positive")
 	}
 	updatedAt := time.Now().UTC().Format(timeLayout)
-	result, err := s.q().ExecContext(ctx, `
-		update threads
-		set closed_at_local = null, close_reason_local = null, updated_at = ?
-		where repo_id = ? and number = ?
-	`, updatedAt, repoID, number)
+	affected, err := s.qsql().ReopenThreadLocally(ctx, storedb.ReopenThreadLocallyParams{
+		UpdatedAt: updatedAt,
+		RepoID:    repoID,
+		Number:    int64(number),
+	})
 	if err != nil {
 		return fmt.Errorf("reopen thread locally: %w", err)
 	}
-	if affected, err := result.RowsAffected(); err == nil && affected == 0 {
+	if affected == 0 {
 		return fmt.Errorf("thread #%d was not found", number)
 	}
 	return nil
