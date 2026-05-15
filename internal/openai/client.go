@@ -233,10 +233,15 @@ func (c *Client) embedOnce(ctx context.Context, model string, texts []string) ([
 		return nil, nil, fmt.Errorf("openai embeddings returned %d vectors for %d inputs", len(parsed.Data), len(texts))
 	}
 	out := make([][]float64, len(texts))
+	seen := make([]bool, len(texts))
 	for _, item := range parsed.Data {
 		if item.Index < 0 || item.Index >= len(texts) {
 			return nil, nil, fmt.Errorf("openai embeddings returned invalid index %d", item.Index)
 		}
+		if seen[item.Index] {
+			return nil, nil, fmt.Errorf("openai embeddings returned duplicate index %d", item.Index)
+		}
+		seen[item.Index] = true
 		out[item.Index] = item.Embedding
 	}
 	for index, vector := range out {
