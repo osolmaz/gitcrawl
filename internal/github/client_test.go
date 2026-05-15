@@ -207,6 +207,59 @@ func TestClientSingleResourceAndCollectionEndpoints(t *testing.T) {
 	}
 }
 
+func TestCheckRunsAndWorkflowRunsPaginate(t *testing.T) {
+	requests := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests[r.URL.Path]++
+		page := r.URL.Query().Get("page")
+		switch r.URL.Path {
+		case "/repos/openclaw/gitcrawl/commits/abc/check-runs":
+			switch page {
+			case "":
+				w.Header().Set("Link", `<`+serverURL(r)+`?page=2>; rel="next"`)
+				_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []map[string]any{{"name": "test-1"}, {"name": "test-2"}}})
+			case "2":
+				_ = json.NewEncoder(w).Encode(map[string]any{"check_runs": []map[string]any{{"name": "test-3"}}})
+			default:
+				t.Fatalf("unexpected check-runs page: %s", r.URL.RawQuery)
+			}
+		case "/repos/openclaw/gitcrawl/actions/runs":
+			switch page {
+			case "":
+				w.Header().Set("Link", `<`+serverURL(r)+`?page=2>; rel="next"`)
+				_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{{"id": 1}, {"id": 2}}})
+			case "2":
+				_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{{"id": 3}, {"id": 4}}})
+			default:
+				t.Fatalf("unexpected workflow-runs page: %s", r.URL.RawQuery)
+			}
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := New(Options{BaseURL: server.URL, PageDelay: -1})
+	ctx := context.Background()
+	checks, err := client.ListCommitCheckRuns(ctx, "openclaw", "gitcrawl", "abc", nil)
+	if err != nil {
+		t.Fatalf("list checks: %v", err)
+	}
+	if len(checks) != 3 || checks[2]["name"] != "test-3" {
+		t.Fatalf("checks = %#v", checks)
+	}
+	runs, err := client.ListWorkflowRuns(ctx, "openclaw", "gitcrawl", ListWorkflowRunsOptions{HeadSHA: "abc", Limit: 3}, nil)
+	if err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs) != 3 || intValue(runs[2]["id"]) != 3 {
+		t.Fatalf("runs = %#v", runs)
+	}
+	if requests["/repos/openclaw/gitcrawl/commits/abc/check-runs"] != 2 || requests["/repos/openclaw/gitcrawl/actions/runs"] != 2 {
+		t.Fatalf("requests = %+v", requests)
+	}
+}
+
 func TestListPullReviewThreadsDecodesGraphQLEnvelope(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/graphql" {
