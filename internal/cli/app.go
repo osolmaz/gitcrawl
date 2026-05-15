@@ -1992,6 +1992,9 @@ func (a *App) runInit(ctx context.Context, args []string) error {
 	if strings.TrimSpace(*dbPath) != "" {
 		cfg.DBPath = strings.TrimSpace(*dbPath)
 	}
+	if err := cfg.Normalize(); err != nil {
+		return err
+	}
 	if err := config.Save(a.configPath, cfg); err != nil {
 		return err
 	}
