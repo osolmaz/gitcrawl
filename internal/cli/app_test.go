@@ -3070,6 +3070,66 @@ func TestClusterCommandAllowsExplicitUnsupportedBasisWithoutRetirement(t *testin
 	}
 }
 
+func TestClusterCommandRejectsNonFiniteThresholdBeforeMutation(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	dbPath := filepath.Join(dir, "gitcrawl.db")
+	app := New()
+	if err := app.Run(ctx, []string{"--config", configPath, "init", "--db", dbPath}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	repoID, err := st.UpsertRepository(ctx, store.Repository{Owner: "openclaw", Name: "openclaw", FullName: "openclaw/openclaw", RawJSON: "{}", UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("seed repository: %v", err)
+	}
+	for number, vector := range map[int][]float64{701: {1, 0}, 702: {0.95, 0.05}} {
+		threadID, err := st.UpsertThread(ctx, store.Thread{
+			RepoID: repoID, GitHubID: strconv.Itoa(number), Number: number, Kind: "issue", State: "open",
+			Title: "Non finite threshold", HTMLURL: fmt.Sprintf("https://github.com/openclaw/openclaw/issues/%d", number),
+			LabelsJSON: "[]", AssigneesJSON: "[]", RawJSON: "{}", ContentHash: fmt.Sprintf("hash-%d", number), UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatalf("seed thread %d: %v", number, err)
+		}
+		if err := st.UpsertThreadVector(ctx, store.ThreadVector{
+			ThreadID: threadID, Basis: "title_original", Model: "text-embedding-3-small", Dimensions: 2,
+			ContentHash: fmt.Sprintf("hash-%d", number), Vector: vector, CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("upsert vector %d: %v", number, err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	run := New()
+	var stdout bytes.Buffer
+	run.Stdout = &stdout
+	if err := run.Run(ctx, []string{"--config", configPath, "cluster", "openclaw/openclaw", "--threshold", "NaN", "--json"}); err == nil {
+		t.Fatal("cluster with NaN threshold should fail")
+	}
+	st, err = store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer st.Close()
+	for _, table := range []string{"cluster_runs", "cluster_groups"} {
+		var count int
+		if err := st.DB().QueryRowContext(ctx, `select count(*) from `+table).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("%s count = %d, want 0", table, count)
+		}
+	}
+}
+
 func TestBuildDurableClusterInputsPrunesWeakCrossKindEdges(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))

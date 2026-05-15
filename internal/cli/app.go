@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/url"
 	"os"
 	"os/exec"
@@ -3034,6 +3035,9 @@ func parseOptionalFloat(value string) (float64, error) {
 	parsed, err := strconv.ParseFloat(value, 64)
 	if err != nil {
 		return 0, fmt.Errorf("expected number, got %q", value)
+	}
+	if math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+		return 0, fmt.Errorf("expected finite number, got %q", value)
 	}
 	return parsed, nil
 }
