@@ -2,6 +2,7 @@
 
 ## 0.3.5 - Unreleased
 
+- Keep cosine similarity stable for very large finite vectors instead of dropping them after float overflow.
 - Allow cluster detail reads to target raw-run or durable-cluster IDs explicitly, avoiding collisions between the two ID namespaces.
 - Keep active durable cluster representatives on visible open members instead of closed or hidden historical members.
 - Avoid holding SQLite write transactions open while hydrating PR details from GitHub.

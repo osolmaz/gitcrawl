@@ -46,14 +46,36 @@ func Cosine(left, right []float64) float64 {
 	if len(left) == 0 || len(left) != len(right) {
 		return 0
 	}
+	var leftMaxAbs, rightMaxAbs float64
+	for index := range left {
+		leftValue := left[index]
+		rightValue := right[index]
+		if math.IsNaN(leftValue) || math.IsNaN(rightValue) || math.IsInf(leftValue, 0) || math.IsInf(rightValue, 0) {
+			return 0
+		}
+		leftMaxAbs = max(leftMaxAbs, math.Abs(leftValue))
+		rightMaxAbs = max(rightMaxAbs, math.Abs(rightValue))
+	}
+	if leftMaxAbs == 0 || rightMaxAbs == 0 {
+		return 0
+	}
 	var dot, leftMag, rightMag float64
 	for index := range left {
-		dot += left[index] * right[index]
-		leftMag += left[index] * left[index]
-		rightMag += right[index] * right[index]
+		leftValue := left[index] / leftMaxAbs
+		rightValue := right[index] / rightMaxAbs
+		dot += leftValue * rightValue
+		leftMag += leftValue * leftValue
+		rightMag += rightValue * rightValue
 	}
 	if leftMag == 0 || rightMag == 0 {
 		return 0
 	}
-	return dot / (math.Sqrt(leftMag) * math.Sqrt(rightMag))
+	score := dot / (math.Sqrt(leftMag) * math.Sqrt(rightMag))
+	if score > 1 {
+		return 1
+	}
+	if score < -1 {
+		return -1
+	}
+	return score
 }
