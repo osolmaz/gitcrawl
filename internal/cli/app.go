@@ -413,7 +413,20 @@ func (a *App) runRefresh(ctx context.Context, args []string) error {
 			return err
 		}
 		if len(vectors) == 0 {
-			vectors, err = rt.Store.ListThreadVectorsFiltered(ctx, store.ThreadVectorQuery{RepoID: repo.ID})
+			fallbackQuery := store.ThreadVectorQuery{RepoID: repo.ID}
+			fallbackVectors, err := rt.Store.ListThreadVectorsFiltered(ctx, fallbackQuery)
+			if err != nil {
+				_ = rt.Store.Close()
+				return err
+			}
+			if len(fallbackVectors) > 0 {
+				query = fallbackQuery
+				vectors = fallbackVectors
+			}
+		}
+		retireMissing := minSize <= 1 && !stateIncludesClosed(*state)
+		if retireMissing {
+			retireMissing, err = completeClusterVectorCoverage(ctx, rt.Store, query, vectors)
 			if err != nil {
 				_ = rt.Store.Close()
 				return err
@@ -425,6 +438,7 @@ func (a *App) runRefresh(ctx context.Context, args []string) error {
 			MaxClusterSize:     maxClusterSize,
 			Fanout:             fanout,
 			CrossKindThreshold: crossKindThreshold,
+			RetireMissing:      retireMissing,
 		})
 		_ = rt.Store.Close()
 		if err != nil {
@@ -683,13 +697,25 @@ func (a *App) runCluster(ctx context.Context, args []string) error {
 		return err
 	}
 	if len(vectors) == 0 && strings.TrimSpace(*model) == "" && strings.TrimSpace(*basis) == "" {
-		vectors, err = rt.Store.ListThreadVectorsFiltered(ctx, store.ThreadVectorQuery{RepoID: repo.ID, IncludeClosed: *includeClosed})
+		fallbackQuery := store.ThreadVectorQuery{RepoID: repo.ID, IncludeClosed: *includeClosed}
+		fallbackVectors, err := rt.Store.ListThreadVectorsFiltered(ctx, fallbackQuery)
 		if err != nil {
 			return err
+		}
+		if len(fallbackVectors) > 0 {
+			query = fallbackQuery
+			vectors = fallbackVectors
 		}
 	}
 	if limit > 0 && len(vectors) > limit {
 		vectors = vectors[:limit]
+	}
+	retireMissing := minSize <= 1 && limit == 0 && strings.TrimSpace(*model) == "" && strings.TrimSpace(*basis) == "" && !*includeClosed
+	if retireMissing {
+		retireMissing, err = completeClusterVectorCoverage(ctx, rt.Store, query, vectors)
+		if err != nil {
+			return err
+		}
 	}
 	clusterResult, err := clusterRepository(ctx, rt.Store, repo.ID, vectors, clusterBuildOptions{
 		Threshold:          threshold,
@@ -697,6 +723,7 @@ func (a *App) runCluster(ctx context.Context, args []string) error {
 		MaxClusterSize:     maxClusterSize,
 		Fanout:             fanout,
 		CrossKindThreshold: crossKindThreshold,
+		RetireMissing:      retireMissing,
 	})
 	if err != nil {
 		return err
@@ -2672,6 +2699,7 @@ type clusterBuildOptions struct {
 	MaxClusterSize     int
 	Fanout             int
 	CrossKindThreshold float64
+	RetireMissing      bool
 }
 
 func parseClusterShapeOptions(command, maxClusterSizeRaw, fanoutRaw, crossKindThresholdRaw string) (int, int, float64, error) {
@@ -2951,12 +2979,36 @@ type clusterRepositoryResult struct {
 	RunID        int64
 }
 
+func completeClusterVectorCoverage(ctx context.Context, st *store.Store, query store.ThreadVectorQuery, storedVectors []store.ThreadVector) (bool, error) {
+	if strings.TrimSpace(query.Model) == "" || strings.TrimSpace(query.Basis) == "" {
+		return false, nil
+	}
+	if !store.SupportsEmbeddingBasis(query.Basis) {
+		return false, nil
+	}
+	pending, err := st.ListEmbeddingTasks(ctx, store.EmbeddingTaskOptions{
+		RepoID:        query.RepoID,
+		Basis:         query.Basis,
+		Model:         query.Model,
+		IncludeClosed: query.IncludeClosed,
+	})
+	if err != nil {
+		return false, err
+	}
+	return len(pending) == 0, nil
+}
+
 func clusterRepository(ctx context.Context, st *store.Store, repoID int64, storedVectors []store.ThreadVector, options clusterBuildOptions) (clusterRepositoryResult, error) {
 	inputs, edgeCount, err := buildDurableClusterInputs(ctx, st, repoID, storedVectors, options)
 	if err != nil {
 		return clusterRepositoryResult{}, err
 	}
-	saveResult, err := st.SaveDurableClusters(ctx, repoID, inputs)
+	var saveResult store.SaveDurableClustersResult
+	if options.RetireMissing {
+		saveResult, err = st.SaveCompleteDurableClusters(ctx, repoID, inputs)
+	} else {
+		saveResult, err = st.SaveDurableClusters(ctx, repoID, inputs)
+	}
 	if err != nil {
 		return clusterRepositoryResult{}, err
 	}

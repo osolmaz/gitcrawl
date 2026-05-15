@@ -2,6 +2,7 @@
 
 ## 0.3.5 - Unreleased
 
+- Retire durable clusters that disappear from a successful clustering run, while still preserving local close overrides across reclustering.
 - Derive the default vector directory from custom database paths, including `GITCRAWL_DB_PATH`, so separate stores do not share embeddings unless `vector_dir` is set explicitly.
 - Refuse to refresh a portable store checkout when its Git remote does not match the requested portable store, avoiding accidental resets of unrelated working trees.
 - Ignore non-finite vector similarity scores so malformed embeddings cannot surface as neighbors.

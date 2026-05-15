@@ -2728,7 +2728,6 @@ func TestClusterCommandPersistsDurableClusters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}
-	defer st.Close()
 	clusters, err := st.ListClusterSummaries(ctx, store.ClusterSummaryOptions{RepoID: repoID, IncludeClosed: false, MinSize: 1, Limit: 20})
 	if err != nil {
 		t.Fatalf("list clusters: %v", err)
@@ -2740,6 +2739,334 @@ func TestClusterCommandPersistsDurableClusters(t *testing.T) {
 	sort.Ints(memberCounts)
 	if len(memberCounts) != 2 || memberCounts[0] != 1 || memberCounts[1] != 2 {
 		t.Fatalf("expected duplicate cluster plus singleton, got %#v", clusters)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store before limited cluster: %v", err)
+	}
+
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "cluster", "openclaw/openclaw", "--threshold", "0.90", "--limit", "2", "--json"}); err != nil {
+		t.Fatalf("limited cluster: %v", err)
+	}
+	st, err = store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen store after limited cluster: %v", err)
+	}
+	clusters, err = st.ListClusterSummaries(ctx, store.ClusterSummaryOptions{RepoID: repoID, IncludeClosed: false, MinSize: 1, Limit: 20})
+	if err != nil {
+		t.Fatalf("list clusters after limited run: %v", err)
+	}
+	if len(clusters) != 2 {
+		t.Fatalf("limited cluster run should not retire unprocessed clusters, got %#v", clusters)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store after limited cluster: %v", err)
+	}
+
+	if err := run.Run(ctx, []string{"--config", configPath, "configure", "--embed-model", "text-embedding-3-large"}); err != nil {
+		t.Fatalf("configure new embed model: %v", err)
+	}
+	st, err = store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen store before model migration cluster: %v", err)
+	}
+	for _, vector := range []store.ThreadVector{
+		{ThreadID: firstID, Basis: "title_original", Model: "text-embedding-3-large", Dimensions: 2, ContentHash: "hash-91-large", Vector: []float64{1, 0}, CreatedAt: now, UpdatedAt: now},
+		{ThreadID: secondID, Basis: "title_original", Model: "text-embedding-3-large", Dimensions: 2, ContentHash: "hash-92-large", Vector: []float64{0.95, 0.05}, CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := st.UpsertThreadVector(ctx, vector); err != nil {
+			t.Fatalf("upsert migrated vector: %v", err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store before model migration cluster: %v", err)
+	}
+
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "cluster", "openclaw/openclaw", "--threshold", "0.90", "--json"}); err != nil {
+		t.Fatalf("model migration cluster: %v", err)
+	}
+	st, err = store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen store after model migration cluster: %v", err)
+	}
+	clusters, err = st.ListClusterSummaries(ctx, store.ClusterSummaryOptions{RepoID: repoID, IncludeClosed: false, MinSize: 1, Limit: 20})
+	if err != nil {
+		t.Fatalf("list clusters after model migration run: %v", err)
+	}
+	if len(clusters) != 2 {
+		t.Fatalf("partial model migration run should not retire clusters without new vectors, got %#v", clusters)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store after model migration cluster: %v", err)
+	}
+
+	st, err = store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen store before close-all cluster: %v", err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `update threads set state = 'closed', closed_at_gh = ?, updated_at = ? where repo_id = ?`, now, now, repoID); err != nil {
+		t.Fatalf("close seeded threads: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store before close-all cluster: %v", err)
+	}
+
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "cluster", "openclaw/openclaw", "--threshold", "0.90", "--json"}); err != nil {
+		t.Fatalf("close-all cluster: %v", err)
+	}
+	st, err = store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen store after close-all cluster: %v", err)
+	}
+	clusters, err = st.ListClusterSummaries(ctx, store.ClusterSummaryOptions{RepoID: repoID, IncludeClosed: false, MinSize: 1, Limit: 20})
+	if err != nil {
+		t.Fatalf("list clusters after close-all run: %v", err)
+	}
+	if len(clusters) != 0 {
+		t.Fatalf("complete zero-vector run should retire active clusters, got %#v", clusters)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store after close-all cluster: %v", err)
+	}
+}
+
+func TestCompleteClusterVectorCoverageRequiresFreshVectors(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	repoID, err := st.UpsertRepository(ctx, store.Repository{Owner: "openclaw", Name: "openclaw", FullName: "openclaw/openclaw", RawJSON: "{}", UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("seed repository: %v", err)
+	}
+	firstThread := store.Thread{
+		RepoID: repoID, GitHubID: "501", Number: 501, Kind: "issue", State: "open",
+		Title: "Fresh vector coverage", Body: "original body",
+		HTMLURL: "https://github.com/openclaw/openclaw/issues/501", LabelsJSON: "[]", AssigneesJSON: "[]",
+		RawJSON: "{}", ContentHash: "hash-501", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	firstThreadID, err := st.UpsertThread(ctx, firstThread)
+	if err != nil {
+		t.Fatalf("seed first thread: %v", err)
+	}
+	secondThread := store.Thread{
+		RepoID: repoID, GitHubID: "502", Number: 502, Kind: "issue", State: "open",
+		Title: "Stale vector coverage", Body: "original stale body",
+		HTMLURL: "https://github.com/openclaw/openclaw/issues/502", LabelsJSON: "[]", AssigneesJSON: "[]",
+		RawJSON: "{}", ContentHash: "hash-502", UpdatedAt: "2026-04-26T00:00:00Z",
+	}
+	secondThreadID, err := st.UpsertThread(ctx, secondThread)
+	if err != nil {
+		t.Fatalf("seed second thread: %v", err)
+	}
+	query := store.ThreadVectorQuery{RepoID: repoID, Basis: "title_original", Model: "text-embedding-3-small"}
+	tasks, err := st.ListEmbeddingTasks(ctx, store.EmbeddingTaskOptions{RepoID: repoID, Basis: query.Basis, Model: query.Model})
+	if err != nil {
+		t.Fatalf("list embedding tasks: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("embedding tasks = %#v", tasks)
+	}
+	hashByNumber := map[int]string{}
+	for _, task := range tasks {
+		hashByNumber[task.Number] = task.ContentHash
+	}
+	if err := st.UpsertThreadVector(ctx, store.ThreadVector{
+		ThreadID: firstThreadID, Basis: query.Basis, Model: query.Model, Dimensions: 2,
+		ContentHash: hashByNumber[501], Vector: []float64{1, 0}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert first vector: %v", err)
+	}
+	if err := st.UpsertThreadVector(ctx, store.ThreadVector{
+		ThreadID: secondThreadID, Basis: query.Basis, Model: query.Model, Dimensions: 2,
+		ContentHash: "stale-hash", Vector: []float64{0, 1}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert stale second vector: %v", err)
+	}
+	vectors, err := st.ListThreadVectorsFiltered(ctx, query)
+	if err != nil {
+		t.Fatalf("list vectors: %v", err)
+	}
+	complete, err := completeClusterVectorCoverage(ctx, st, query, vectors)
+	if err != nil {
+		t.Fatalf("stale older coverage: %v", err)
+	}
+	if complete {
+		t.Fatal("stale older vector should not complete cluster coverage")
+	}
+
+	if err := st.UpsertThreadVector(ctx, store.ThreadVector{
+		ThreadID: secondThreadID, Basis: query.Basis, Model: query.Model, Dimensions: 2,
+		ContentHash: hashByNumber[502], Vector: []float64{0, 1}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("refresh second vector: %v", err)
+	}
+	vectors, err = st.ListThreadVectorsFiltered(ctx, query)
+	if err != nil {
+		t.Fatalf("list fresh vectors: %v", err)
+	}
+	complete, err = completeClusterVectorCoverage(ctx, st, query, vectors)
+	if err != nil {
+		t.Fatalf("fresh complete coverage: %v", err)
+	}
+	if !complete {
+		t.Fatal("fresh vectors should complete cluster coverage")
+	}
+
+	firstThread.Body = "changed body"
+	firstThread.ContentHash = "hash-501-updated"
+	firstThread.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := st.UpsertThread(ctx, firstThread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	complete, err = completeClusterVectorCoverage(ctx, st, query, vectors)
+	if err != nil {
+		t.Fatalf("stale complete coverage: %v", err)
+	}
+	if complete {
+		t.Fatal("stale vector should not complete cluster coverage")
+	}
+}
+
+func TestCompleteClusterVectorCoverageAllowsUnembeddableSummaryThreads(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	repoID, err := st.UpsertRepository(ctx, store.Repository{Owner: "openclaw", Name: "openclaw", FullName: "openclaw/openclaw", RawJSON: "{}", UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("seed repository: %v", err)
+	}
+	firstID, err := st.UpsertThread(ctx, store.Thread{
+		RepoID: repoID, GitHubID: "511", Number: 511, Kind: "issue", State: "open",
+		Title: "Has key summary", Body: "body",
+		HTMLURL: "https://github.com/openclaw/openclaw/issues/511", LabelsJSON: "[]", AssigneesJSON: "[]",
+		RawJSON: "{}", ContentHash: "hash-511", UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("seed first thread: %v", err)
+	}
+	if _, err := st.UpsertThread(ctx, store.Thread{
+		RepoID: repoID, GitHubID: "512", Number: 512, Kind: "issue", State: "open",
+		Title: "No key summary", Body: "body",
+		HTMLURL: "https://github.com/openclaw/openclaw/issues/512", LabelsJSON: "[]", AssigneesJSON: "[]",
+		RawJSON: "{}", ContentHash: "hash-512", UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed second thread: %v", err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `
+		insert into thread_revisions(thread_id, source_updated_at, content_hash, title_hash, body_hash, labels_hash, created_at)
+		values(?, ?, 'content', 'title', 'body', 'labels', ?)
+	`, firstID, now, now); err != nil {
+		t.Fatalf("seed revision: %v", err)
+	}
+	var revisionID int64
+	if err := st.DB().QueryRowContext(ctx, `select id from thread_revisions where thread_id = ?`, firstID).Scan(&revisionID); err != nil {
+		t.Fatalf("revision id: %v", err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `
+		insert into thread_key_summaries(thread_revision_id, summary_kind, prompt_version, provider, model, input_hash, output_hash, key_text, created_at)
+		values(?, 'llm_key_summary', 'test', 'test', 'test', 'input', 'output', 'key summary text', ?)
+	`, revisionID, now); err != nil {
+		t.Fatalf("seed key summary: %v", err)
+	}
+
+	query := store.ThreadVectorQuery{RepoID: repoID, Basis: "llm_key_summary", Model: "text-embedding-3-small"}
+	tasks, err := st.ListEmbeddingTasks(ctx, store.EmbeddingTaskOptions{RepoID: repoID, Basis: query.Basis, Model: query.Model})
+	if err != nil {
+		t.Fatalf("list embedding tasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Number != 511 {
+		t.Fatalf("embedding tasks = %#v", tasks)
+	}
+	if err := st.UpsertThreadVector(ctx, store.ThreadVector{
+		ThreadID: firstID, Basis: query.Basis, Model: query.Model, Dimensions: 2,
+		ContentHash: tasks[0].ContentHash, Vector: []float64{1, 0}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert summary vector: %v", err)
+	}
+	vectors, err := st.ListThreadVectorsFiltered(ctx, query)
+	if err != nil {
+		t.Fatalf("list vectors: %v", err)
+	}
+	complete, err := completeClusterVectorCoverage(ctx, st, query, vectors)
+	if err != nil {
+		t.Fatalf("summary coverage: %v", err)
+	}
+	if !complete {
+		t.Fatal("unembeddable summary thread should not block complete cluster coverage")
+	}
+}
+
+func TestClusterCommandAllowsExplicitUnsupportedBasisWithoutRetirement(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	dbPath := filepath.Join(dir, "gitcrawl.db")
+	app := New()
+	if err := app.Run(ctx, []string{"--config", configPath, "init", "--db", dbPath}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	repoID, err := st.UpsertRepository(ctx, store.Repository{Owner: "openclaw", Name: "openclaw", FullName: "openclaw/openclaw", RawJSON: "{}", UpdatedAt: now})
+	if err != nil {
+		t.Fatalf("seed repository: %v", err)
+	}
+	threadID, err := st.UpsertThread(ctx, store.Thread{
+		RepoID: repoID, GitHubID: "601", Number: 601, Kind: "issue", State: "open",
+		Title: "Custom basis vector", Body: "custom vector body",
+		HTMLURL: "https://github.com/openclaw/openclaw/issues/601", LabelsJSON: "[]", AssigneesJSON: "[]",
+		RawJSON: "{}", ContentHash: "hash-601", UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("seed thread: %v", err)
+	}
+	if err := st.UpsertThreadVector(ctx, store.ThreadVector{
+		ThreadID: threadID, Basis: "external_basis", Model: "external-model", Dimensions: 2,
+		ContentHash: "external-hash", Vector: []float64{1, 0}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert vector: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	run := New()
+	var stdout bytes.Buffer
+	run.Stdout = &stdout
+	if err := run.Run(ctx, []string{"--config", configPath, "cluster", "openclaw/openclaw", "--basis", "external_basis", "--model", "external-model", "--json"}); err != nil {
+		t.Fatalf("cluster explicit basis: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"cluster_count": 1`) {
+		t.Fatalf("cluster output = %q", stdout.String())
+	}
+
+	configure := New()
+	if err := configure.Run(ctx, []string{"--config", configPath, "configure", "--embed-model", "external-model", "--embedding-basis", "external_basis"}); err != nil {
+		t.Fatalf("configure custom basis: %v", err)
+	}
+	stdout.Reset()
+	configured := New()
+	configured.Stdout = &stdout
+	if err := configured.Run(ctx, []string{"--config", configPath, "cluster", "openclaw/openclaw", "--min-size", "1", "--json"}); err != nil {
+		t.Fatalf("cluster configured custom basis: %v", err)
+	}
+	if !strings.Contains(stdout.String(), `"cluster_count": 1`) {
+		t.Fatalf("configured cluster output = %q", stdout.String())
 	}
 }
 

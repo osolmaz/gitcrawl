@@ -88,6 +88,15 @@ func (s *Store) ListEmbeddingTasks(ctx context.Context, options EmbeddingTaskOpt
 	return out, nil
 }
 
+func SupportsEmbeddingBasis(basis string) bool {
+	switch strings.TrimSpace(basis) {
+	case "", "title_original", "dedupe_text", "llm_key_summary":
+		return true
+	default:
+		return false
+	}
+}
+
 func embeddingTextForBasis(basis, title, body, rawText, dedupeText, keySummary string) (string, error) {
 	text, _, err := embeddingTextForBasisWithMeta(basis, title, body, rawText, dedupeText, keySummary)
 	return text, err

@@ -526,3 +526,82 @@ func TestSaveDurableClustersAppliesLocalOverrides(t *testing.T) {
 		t.Fatalf("excluded member should remain visible with include closed: %#v", all)
 	}
 }
+
+func TestSaveDurableClustersRetiresMissingClusters(t *testing.T) {
+	ctx := context.Background()
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	repoID, threadIDs := seedVectorThreads(t, ctx, st)
+	first := DurableClusterInput{
+		StableKey:              "members:301",
+		StableSlug:             "cluster-301",
+		RepresentativeThreadID: threadIDs[0],
+		Members:                []DurableClusterMemberInput{{ThreadID: threadIDs[0], Role: "canonical"}},
+	}
+	second := DurableClusterInput{
+		StableKey:              "members:302",
+		StableSlug:             "cluster-302",
+		RepresentativeThreadID: threadIDs[1],
+		Members:                []DurableClusterMemberInput{{ThreadID: threadIDs[1], Role: "canonical"}},
+	}
+	if _, err := st.SaveDurableClusters(ctx, repoID, []DurableClusterInput{first, second}); err != nil {
+		t.Fatalf("seed durable clusters: %v", err)
+	}
+	secondID, err := st.ClusterIDForThreadNumber(ctx, repoID, 302, false)
+	if err != nil {
+		t.Fatalf("second cluster id: %v", err)
+	}
+
+	if _, err := st.SaveDurableClusters(ctx, repoID, []DurableClusterInput{first}); err != nil {
+		t.Fatalf("partial resave without second cluster: %v", err)
+	}
+	if _, err := st.ClusterIDForThreadNumber(ctx, repoID, 302, false); err != nil {
+		t.Fatalf("partial save should not retire missing cluster: %v", err)
+	}
+
+	if _, err := st.SaveCompleteDurableClusters(ctx, repoID, []DurableClusterInput{first}); err != nil {
+		t.Fatalf("complete resave without second cluster: %v", err)
+	}
+	if _, err := st.ClusterIDForThreadNumber(ctx, repoID, 302, false); err == nil {
+		t.Fatal("cluster missing from complete save should not remain active")
+	}
+	retired, err := st.DurableClusterDetail(ctx, ClusterDetailOptions{RepoID: repoID, ClusterID: secondID, IncludeClosed: true, MemberLimit: 5})
+	if err != nil {
+		t.Fatalf("retired cluster detail: %v", err)
+	}
+	if retired.Cluster.Status != "closed" || retired.Cluster.ClosedAt == "" {
+		t.Fatalf("retired cluster = %+v", retired.Cluster)
+	}
+	var retiredEvents int
+	if err := st.DB().QueryRowContext(ctx, `select count(*) from cluster_events where cluster_id = ? and event_type = 'retired'`, secondID).Scan(&retiredEvents); err != nil {
+		t.Fatalf("count retired events: %v", err)
+	}
+	if retiredEvents != 1 {
+		t.Fatalf("retired events = %d, want 1", retiredEvents)
+	}
+
+	if _, err := st.SaveCompleteDurableClusters(ctx, repoID, []DurableClusterInput{second}); err != nil {
+		t.Fatalf("resave with second cluster: %v", err)
+	}
+	reactivated, err := st.DurableClusterDetail(ctx, ClusterDetailOptions{RepoID: repoID, ClusterID: secondID, IncludeClosed: false, MemberLimit: 5})
+	if err != nil {
+		t.Fatalf("reactivated cluster detail: %v", err)
+	}
+	if reactivated.Cluster.Status != "active" || reactivated.Cluster.ClosedAt != "" {
+		t.Fatalf("reactivated cluster = %+v", reactivated.Cluster)
+	}
+
+	if err := st.CloseClusterLocally(ctx, repoID, secondID, "not actionable"); err != nil {
+		t.Fatalf("close second cluster: %v", err)
+	}
+	if _, err := st.SaveCompleteDurableClusters(ctx, repoID, []DurableClusterInput{second}); err != nil {
+		t.Fatalf("resave locally closed cluster: %v", err)
+	}
+	if _, err := st.DurableClusterDetail(ctx, ClusterDetailOptions{RepoID: repoID, ClusterID: secondID, IncludeClosed: false, MemberLimit: 5}); err == nil {
+		t.Fatal("locally closed cluster should stay hidden after reappearing")
+	}
+}

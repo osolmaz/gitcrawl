@@ -684,6 +684,14 @@ func (s *Store) ReopenClusterLocally(ctx context.Context, repoID, clusterID int6
 }
 
 func (s *Store) SaveDurableClusters(ctx context.Context, repoID int64, inputs []DurableClusterInput) (SaveDurableClustersResult, error) {
+	return s.saveDurableClusters(ctx, repoID, inputs, false)
+}
+
+func (s *Store) SaveCompleteDurableClusters(ctx context.Context, repoID int64, inputs []DurableClusterInput) (SaveDurableClustersResult, error) {
+	return s.saveDurableClusters(ctx, repoID, inputs, true)
+}
+
+func (s *Store) saveDurableClusters(ctx context.Context, repoID int64, inputs []DurableClusterInput, retireMissing bool) (SaveDurableClustersResult, error) {
 	if repoID <= 0 {
 		return SaveDurableClustersResult{}, fmt.Errorf("repo id must be positive")
 	}
@@ -695,11 +703,13 @@ func (s *Store) SaveDurableClusters(ctx context.Context, repoID int64, inputs []
 			return err
 		}
 		result.RunID = runID
+		seenClusterIDs := make([]int64, 0, len(inputs))
 		for _, input := range inputs {
 			clusterID, err := tx.upsertDurableCluster(ctx, repoID, runID, input, now)
 			if err != nil {
 				return err
 			}
+			seenClusterIDs = append(seenClusterIDs, clusterID)
 			memberIDs := make([]int64, 0, len(input.Members))
 			for _, member := range input.Members {
 				if member.ThreadID <= 0 {
@@ -737,9 +747,14 @@ func (s *Store) SaveDurableClusters(ctx context.Context, repoID int64, inputs []
 				return err
 			}
 		}
+		if retireMissing {
+			if err := tx.markMissingDurableClustersRetired(ctx, repoID, runID, seenClusterIDs, now); err != nil {
+				return err
+			}
+		}
 		if len(inputs) > 0 {
 			if _, err := tx.q().ExecContext(ctx, `
-				delete from cluster_groups
+					delete from cluster_groups
 				where repo_id = ?
 				  and cluster_type = 'similarity'
 			`, repoID); err != nil {
@@ -976,17 +991,25 @@ func (s *Store) upsertDurableCluster(ctx context.Context, repoID, runID int64, i
 			repo_id, stable_key, stable_slug, status, cluster_type, representative_thread_id, title, created_at, updated_at
 		)
 		values(?, ?, ?, 'active', ?, ?, ?, ?, ?)
-		on conflict(repo_id, stable_key) do update set
-			stable_slug = excluded.stable_slug,
-			cluster_type = excluded.cluster_type,
-			representative_thread_id = case
-				when cluster_groups.status = 'closed' then cluster_groups.representative_thread_id
-				else excluded.representative_thread_id
-			end,
-			title = excluded.title,
-			updated_at = excluded.updated_at
-		returning id
-	`, repoID, stableKey, stableSlug, clusterType, nullInt(input.RepresentativeThreadID), nullString(input.Title), now, now).Scan(&clusterID); err != nil {
+			on conflict(repo_id, stable_key) do update set
+				status = case
+					when exists(select 1 from cluster_closures where cluster_id = cluster_groups.id and actor_kind = 'local') then cluster_groups.status
+					else 'active'
+				end,
+				stable_slug = excluded.stable_slug,
+				cluster_type = excluded.cluster_type,
+				representative_thread_id = case
+					when exists(select 1 from cluster_closures where cluster_id = cluster_groups.id and actor_kind = 'local') then cluster_groups.representative_thread_id
+					else excluded.representative_thread_id
+				end,
+				title = excluded.title,
+				closed_at = case
+					when exists(select 1 from cluster_closures where cluster_id = cluster_groups.id and actor_kind = 'local') then cluster_groups.closed_at
+					else null
+				end,
+				updated_at = excluded.updated_at
+			returning id
+		`, repoID, stableKey, stableSlug, clusterType, nullInt(input.RepresentativeThreadID), nullString(input.Title), now, now).Scan(&clusterID); err != nil {
 		return 0, fmt.Errorf("upsert durable cluster: %w", err)
 	}
 	if _, err := s.q().ExecContext(ctx, `
@@ -996,6 +1019,52 @@ func (s *Store) upsertDurableCluster(ctx context.Context, repoID, runID int64, i
 		return 0, fmt.Errorf("record durable cluster event: %w", err)
 	}
 	return clusterID, nil
+}
+
+func (s *Store) markMissingDurableClustersRetired(ctx context.Context, repoID, runID int64, seenClusterIDs []int64, now string) error {
+	where := `repo_id = ? and status = 'active' and closed_at is null`
+	args := []any{now, now, repoID}
+	if len(seenClusterIDs) > 0 {
+		placeholders := make([]string, 0, len(seenClusterIDs))
+		for _, id := range seenClusterIDs {
+			placeholders = append(placeholders, "?")
+			args = append(args, id)
+		}
+		where += ` and id not in (` + strings.Join(placeholders, ",") + `)`
+	}
+	rows, err := s.q().QueryContext(ctx, `
+		update cluster_groups
+		set status = 'closed',
+			closed_at = ?,
+			updated_at = ?
+		where `+where+`
+		returning id
+	`, args...)
+	if err != nil {
+		return fmt.Errorf("retire missing durable clusters: %w", err)
+	}
+	defer rows.Close()
+
+	var retired []int64
+	for rows.Next() {
+		var clusterID int64
+		if err := rows.Scan(&clusterID); err != nil {
+			return fmt.Errorf("scan retired durable cluster: %w", err)
+		}
+		retired = append(retired, clusterID)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate retired durable clusters: %w", err)
+	}
+	for _, clusterID := range retired {
+		if _, err := s.q().ExecContext(ctx, `
+			insert into cluster_events(cluster_id, run_id, event_type, actor_kind, payload_json, created_at)
+			values(?, ?, 'retired', 'cluster', '{"reason":"not seen in latest cluster run"}', ?)
+		`, clusterID, runID, now); err != nil {
+			return fmt.Errorf("record retired durable cluster event: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) markMissingClusterMembersRemoved(ctx context.Context, clusterID int64, memberIDs []int64, now string) error {
