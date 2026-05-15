@@ -3266,7 +3266,7 @@ Usage:
 	"refresh": `gitcrawl refresh runs sync, enrichment, embedding, and clustering.
 
 Usage:
-  gitcrawl refresh owner/repo [--state open|closed|all] [--sync-if-stale duration] [--no-sync] [--no-embed] [--no-cluster] [--json]
+  gitcrawl refresh owner/repo [--state open|closed|all] [--no-sync] [--no-embed] [--no-cluster] [--json]
 `,
 	"embed": `gitcrawl embed generates OpenAI embeddings for local thread documents.
 

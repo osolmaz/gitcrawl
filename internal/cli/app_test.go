@@ -173,6 +173,13 @@ func TestMetadataStatusAndControlStatusJSON(t *testing.T) {
 			t.Fatalf("%s help output = %q", topic, helpOut.String())
 		}
 	}
+	helpOut.Reset()
+	if err := help.printCommandUsage("refresh"); err != nil {
+		t.Fatalf("refresh help: %v", err)
+	}
+	if strings.Contains(helpOut.String(), "--sync-if-stale") {
+		t.Fatalf("refresh help should not advertise search-only --sync-if-stale: %q", helpOut.String())
+	}
 	if err := New().Run(ctx, []string{"--config", configPath, "status", "extra"}); err == nil {
 		t.Fatal("status extra arg should fail")
 	}
