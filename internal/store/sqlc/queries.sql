@@ -38,12 +38,12 @@ on conflict(full_name) do update set
 returning id;
 
 -- name: RepositoryByFullName :one
-select id, owner, name, full_name, github_repo_id, raw_json, updated_at
+select id, owner, name, full_name, github_repo_id, coalesce(raw_json, '') as raw_json, updated_at
 from repositories
 where full_name = sqlc.arg(full_name);
 
 -- name: ListRepositories :many
-select id, owner, name, full_name, github_repo_id, raw_json, updated_at
+select id, owner, name, full_name, github_repo_id, coalesce(raw_json, '') as raw_json, updated_at
 from repositories
 order by coalesce(updated_at, '') desc, id desc;
 

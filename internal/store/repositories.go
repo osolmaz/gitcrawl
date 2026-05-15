@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/openclaw/gitcrawl/internal/store/storedb"
 )
 
 type Repository struct {
@@ -20,18 +22,14 @@ func (s *Store) UpsertRepository(ctx context.Context, repo Repository) (int64, e
 	if repo.FullName == "" {
 		repo.FullName = repo.Owner + "/" + repo.Name
 	}
-	var id int64
-	err := s.q().QueryRowContext(ctx, `
-		insert into repositories(owner, name, full_name, github_repo_id, raw_json, updated_at)
-		values(?, ?, ?, ?, ?, ?)
-		on conflict(full_name) do update set
-			owner=excluded.owner,
-			name=excluded.name,
-			github_repo_id=excluded.github_repo_id,
-			raw_json=excluded.raw_json,
-			updated_at=excluded.updated_at
-		returning id
-	`, repo.Owner, repo.Name, repo.FullName, nullString(repo.GitHubRepoID), repo.RawJSON, repo.UpdatedAt).Scan(&id)
+	id, err := s.qsql().UpsertRepository(ctx, storedb.UpsertRepositoryParams{
+		Owner:        repo.Owner,
+		Name:         repo.Name,
+		FullName:     repo.FullName,
+		GithubRepoID: nullString(repo.GitHubRepoID),
+		RawJson:      repo.RawJSON,
+		UpdatedAt:    repo.UpdatedAt,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("upsert repository: %w", err)
 	}
@@ -39,6 +37,13 @@ func (s *Store) UpsertRepository(ctx context.Context, repo Repository) (int64, e
 }
 
 func (s *Store) RepositoryByFullName(ctx context.Context, fullName string) (Repository, error) {
+	if s.hasColumn(ctx, "repositories", "raw_json") {
+		repo, err := s.qsql().RepositoryByFullName(ctx, fullName)
+		if err != nil {
+			return Repository{}, fmt.Errorf("select repository: %w", err)
+		}
+		return repositoryFromDB(repo), nil
+	}
 	var repo Repository
 	var githubRepoID sql.NullString
 	var rawJSON sql.NullString
@@ -56,6 +61,17 @@ func (s *Store) RepositoryByFullName(ctx context.Context, fullName string) (Repo
 }
 
 func (s *Store) ListRepositories(ctx context.Context) ([]Repository, error) {
+	if s.hasColumn(ctx, "repositories", "raw_json") {
+		rows, err := s.qsql().ListRepositories(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list repositories: %w", err)
+		}
+		repos := make([]Repository, 0, len(rows))
+		for _, row := range rows {
+			repos = append(repos, repositoryFromDB(row))
+		}
+		return repos, nil
+	}
 	rows, err := s.db.QueryContext(ctx, `
 		select id, owner, name, full_name, github_repo_id, `+s.repositoryRawJSONExpr(ctx)+`, updated_at
 		from repositories
