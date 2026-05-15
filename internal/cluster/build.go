@@ -29,13 +29,16 @@ func Build(nodes []Node, edges []Edge) []Cluster {
 
 func BuildWithOptions(nodes []Node, edges []Edge, options Options) []Cluster {
 	uf := newUnionFind()
+	nodeIDs := make(map[int64]struct{}, len(nodes))
 	for _, node := range nodes {
 		uf.add(node.ThreadID)
+		nodeIDs[node.ThreadID] = struct{}{}
 	}
-	keptEdges := edges
+	filteredEdges := filterEdgesByNodes(edges, nodeIDs)
+	keptEdges := filteredEdges
 	if options.MaxSize > 0 {
-		keptEdges = make([]Edge, 0, len(edges))
-		sortedEdges := append([]Edge(nil), edges...)
+		keptEdges = make([]Edge, 0, len(filteredEdges))
+		sortedEdges := append([]Edge(nil), filteredEdges...)
 		sort.SliceStable(sortedEdges, func(i, j int) bool {
 			if sortedEdges[i].Score == sortedEdges[j].Score {
 				if sortedEdges[i].LeftThreadID == sortedEdges[j].LeftThreadID {
@@ -51,7 +54,7 @@ func BuildWithOptions(nodes []Node, edges []Edge, options Options) []Cluster {
 			}
 		}
 	} else {
-		for _, edge := range edges {
+		for _, edge := range filteredEdges {
 			uf.union(edge.LeftThreadID, edge.RightThreadID)
 		}
 	}
@@ -62,6 +65,20 @@ func BuildWithOptions(nodes []Node, edges []Edge, options Options) []Cluster {
 		byRoot[root] = append(byRoot[root], node.ThreadID)
 	}
 	return format(nodes, keptEdges, byRoot)
+}
+
+func filterEdgesByNodes(edges []Edge, nodeIDs map[int64]struct{}) []Edge {
+	filtered := make([]Edge, 0, len(edges))
+	for _, edge := range edges {
+		if _, ok := nodeIDs[edge.LeftThreadID]; !ok {
+			continue
+		}
+		if _, ok := nodeIDs[edge.RightThreadID]; !ok {
+			continue
+		}
+		filtered = append(filtered, edge)
+	}
+	return filtered
 }
 
 func format(nodes []Node, edges []Edge, byRoot map[int64][]int64) []Cluster {

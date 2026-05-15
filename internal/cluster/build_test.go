@@ -47,6 +47,30 @@ func TestBuildWithOptionsKeepsStrongBoundedComponents(t *testing.T) {
 	}
 }
 
+func TestBuildIgnoresEdgesWithMissingEndpoints(t *testing.T) {
+	nodes := []Node{
+		{ThreadID: 1, Number: 10},
+		{ThreadID: 2, Number: 11},
+	}
+	edges := []Edge{
+		{LeftThreadID: 1, RightThreadID: 99, Score: 0.99},
+		{LeftThreadID: 99, RightThreadID: 2, Score: 0.99},
+	}
+	for name, clusters := range map[string][]Cluster{
+		"unbounded": Build(nodes, edges),
+		"bounded":   BuildWithOptions(nodes, edges, Options{MaxSize: 2}),
+	} {
+		if len(clusters) != 2 {
+			t.Fatalf("%s clusters: got %d want 2: %#v", name, len(clusters), clusters)
+		}
+		for _, cluster := range clusters {
+			if len(cluster.Members) != 1 {
+				t.Fatalf("%s cluster should not merge through absent endpoint: %#v", name, clusters)
+			}
+		}
+	}
+}
+
 func TestUnionFindAndRepresentativeTieBranches(t *testing.T) {
 	uf := newUnionFind()
 	uf.union(1, 2)

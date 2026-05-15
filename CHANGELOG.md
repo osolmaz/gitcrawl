@@ -2,6 +2,7 @@
 
 ## 0.3.5 - Unreleased
 
+- Ignore cluster graph edges whose endpoints are absent from the visible node set, preventing hidden nodes from merging otherwise separate clusters.
 - Make direct `gitcrawl search --mode semantic` use query embeddings and `--mode hybrid` combine semantic and keyword hits instead of relabeling keyword-only search.
 - Remove the search-only `--sync-if-stale` flag from `gitcrawl refresh` help text.
 - Ignore cross-repository `owner/repo#number` references when building deterministic cluster edges for the current repository.
