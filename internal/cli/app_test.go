@@ -999,6 +999,29 @@ func TestPortableRuntimeRejectsManifestMismatchBeforeReplacingMirror(t *testing.
 	if err := copySQLiteFileAtomicVerified(ctx, checkoutDB, mirrorPath); err == nil || !strings.Contains(err.Error(), "schema missing") {
 		t.Fatalf("incomplete manifest should fail without copy, err=%v", err)
 	}
+	info, err := os.Stat(checkoutDB)
+	if err != nil {
+		t.Fatalf("stat checkout db: %v", err)
+	}
+	sum, err := fileSHA256(checkoutDB)
+	if err != nil {
+		t.Fatalf("hash checkout db: %v", err)
+	}
+	legacyManifest := portableDBManifest{
+		Schema:      "ghcrawl-portable-sync-v1",
+		OutputBytes: info.Size(),
+		SHA256:      fmt.Sprintf("%x", sum),
+	}
+	data, err = json.Marshal(legacyManifest)
+	if err != nil {
+		t.Fatalf("marshal legacy manifest: %v", err)
+	}
+	if err := os.WriteFile(portableDBManifestPath(checkoutDB), data, 0o644); err != nil {
+		t.Fatalf("write legacy manifest: %v", err)
+	}
+	if err := validatePortableSQLiteFile(ctx, checkoutDB, checkoutDB); err != nil {
+		t.Fatalf("legacy manifest without quickCheck should remain valid: %v", err)
+	}
 	if err := os.WriteFile(portableDBManifestPath(checkoutDB), []byte("{"), 0o644); err != nil {
 		t.Fatalf("write malformed manifest: %v", err)
 	}

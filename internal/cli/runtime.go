@@ -517,7 +517,7 @@ func validatePortableDBManifest(dbPath, manifestPath string) error {
 	if strings.TrimSpace(manifest.SHA256) == "" {
 		return fmt.Errorf("portable manifest mismatch: sha256 missing")
 	}
-	if strings.TrimSpace(manifest.QuickCheck) != "ok" {
+	if strings.TrimSpace(manifest.QuickCheck) != "" && strings.TrimSpace(manifest.QuickCheck) != "ok" {
 		return fmt.Errorf("portable manifest mismatch: quickCheck %q", manifest.QuickCheck)
 	}
 	if manifest.OutputBytes > 0 && info.Size() != manifest.OutputBytes {
