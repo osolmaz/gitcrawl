@@ -2,6 +2,7 @@
 
 ## 0.3.5 - Unreleased
 
+- Harden portable-store publishing and reads with manifest integrity checks, temp-DB validation before runtime replacement, stale Git lock cleanup, reclone fallback, and richer `doctor` DB health output.
 - Repair malformed portable-store SQLite caches by preserving the bad DB, resetting/pulling the store checkout, and recopying a healthy runtime mirror before local reads continue.
 - Replay GitHub request bodies on rate-limit retries so GraphQL POST retries keep their JSON payload.
 - Send GitHub Enterprise GraphQL requests to `/api/graphql` when the REST API base URL ends in `/api/v3`.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ const portableStoreRepairTimeout = 90 * time.Second
 const portableStoreRefreshTTL = 2 * time.Minute
 const portableStoreRefreshFailureBackoff = time.Minute
 const portableStoreMarkerFile = "gitcrawl-portable-store"
+const staleGitIndexLockAge = 2 * time.Second
 
 var errPortableStoreDirty = errors.New("portable store checkout has local changes")
 
@@ -109,31 +111,89 @@ func refreshPortableStoreForDB(ctx context.Context, dbPath string) error {
 	return removePortableSQLiteSidecars(root)
 }
 
-func repairMalformedPortableStoreForDB(ctx context.Context, dbPath, configPath string) error {
+type portableRepairResult struct {
+	Action           string
+	DBBackupPath     string
+	StoreBackupPath  string
+	RemovedIndexLock bool
+}
+
+func repairMalformedPortableStoreForDB(ctx context.Context, dbPath, configPath string) (portableRepairResult, error) {
+	result := portableRepairResult{Action: "reset-pulled"}
 	root, ok := portableStoreRoot(dbPath)
 	if !ok {
-		return nil
+		return result, nil
 	}
 	if !portableStoreIsGitWorktree(ctx, root) {
-		return nil
+		return result, nil
 	}
 	if !portableStoreRepairAllowed(root, configPath) {
-		return fmt.Errorf("refuse destructive repair for unmarked portable store checkout %s", root)
+		return result, fmt.Errorf("refuse destructive repair for unmarked portable store checkout %s", root)
 	}
-	if err := preserveMalformedPortableDB(root, dbPath); err != nil {
-		return err
+	backupPath, err := preserveMalformedPortableDB(root, dbPath)
+	if err != nil {
+		return result, err
 	}
+	result.DBBackupPath = backupPath
 	pullCtx, cancel := context.WithTimeout(ctx, portableStoreRepairTimeout)
 	defer cancel()
 	if !gitWorktreeClean(pullCtx, root) {
-		if err := runGit(pullCtx, "", "-C", root, "reset", "--hard", "HEAD"); err != nil {
-			return err
+		removed, err := runGitWithStaleIndexLockRetry(pullCtx, root, "-C", root, "reset", "--hard", "HEAD")
+		result.RemovedIndexLock = result.RemovedIndexLock || removed
+		if err != nil {
+			return result, err
 		}
 	}
-	if err := fastForwardGitCheckout(pullCtx, root, true); err != nil {
-		return err
+	removed, err := fastForwardGitCheckoutWithStaleIndexLockRetry(pullCtx, root, true)
+	result.RemovedIndexLock = result.RemovedIndexLock || removed
+	if err != nil {
+		return result, err
 	}
-	return removePortableSQLiteSidecars(root)
+	return result, removePortableSQLiteSidecars(root)
+}
+
+func recloneMalformedPortableStoreForDB(ctx context.Context, dbPath, configPath string) (portableRepairResult, error) {
+	result := portableRepairResult{Action: "recloned"}
+	root, ok := portableStoreRoot(dbPath)
+	if !ok {
+		return result, nil
+	}
+	if !portableStoreIsGitWorktree(ctx, root) {
+		return result, nil
+	}
+	if !portableStoreRepairAllowed(root, configPath) {
+		return result, fmt.Errorf("refuse reclone for unmarked portable store checkout %s", root)
+	}
+	remote := portableStoreRemoteURL(ctx, root)
+	if strings.TrimSpace(remote) == "" {
+		return result, fmt.Errorf("portable store remote not found for %s", root)
+	}
+	branch := currentGitBranch(ctx, root)
+	timestamp := time.Now().UTC().Format("20060102T150405Z")
+	backupPath := filepath.Join(filepath.Dir(root), "backups", "checkout-malformed-"+timestamp)
+	if err := os.MkdirAll(filepath.Dir(backupPath), 0o755); err != nil {
+		return result, fmt.Errorf("create portable checkout backup parent: %w", err)
+	}
+	if err := os.Rename(root, backupPath); err != nil {
+		return result, fmt.Errorf("preserve malformed portable checkout: %w", err)
+	}
+	result.StoreBackupPath = backupPath
+	cloneCtx, cancel := context.WithTimeout(ctx, portableStoreRepairTimeout)
+	defer cancel()
+	cloneArgs := []string{"clone", "--depth", "1"}
+	if strings.TrimSpace(branch) != "" {
+		cloneArgs = append(cloneArgs, "--branch", branch)
+	}
+	cloneArgs = append(cloneArgs, remote, root)
+	if err := runGit(cloneCtx, "", cloneArgs...); err != nil {
+		_ = os.RemoveAll(root)
+		_ = os.Rename(backupPath, root)
+		return result, err
+	}
+	if err := markPortableStoreCheckout(root); err != nil {
+		return result, err
+	}
+	return result, removePortableSQLiteSidecars(root)
 }
 
 var portableRuntimeMu sync.Mutex
@@ -188,9 +248,11 @@ func refreshPortableRuntimeDB(ctx context.Context, sourceDBPath, mirrorPath stri
 		}
 	}
 	if needsCopy && isRepairablePortableSource {
-		sourceHealthErr := sqliteStoreHealth(ctx, sourceDBPath)
-		if sourceHealthErr != nil && isSQLiteCorruption(sourceHealthErr) {
-			if err := repairMalformedPortableStoreForDB(ctx, sourceDBPath, configPath); err != nil {
+		sourceHealthErr := validatePortableSQLiteFile(ctx, sourceDBPath, sourceDBPath)
+		if sourceHealthErr != nil && isPortableSourceRepairableHealthError(sourceHealthErr) {
+			repair, err := repairMalformedPortableStoreForDB(ctx, sourceDBPath, configPath)
+			recordPortableRepairState(statePath, repair, err)
+			if err != nil {
 				if !mirrorCorrupt {
 					if mirrorHealthErr := sqliteStoreHealth(ctx, mirrorPath); mirrorHealthErr == nil {
 						return false, nil
@@ -198,7 +260,15 @@ func refreshPortableRuntimeDB(ctx context.Context, sourceDBPath, mirrorPath stri
 				}
 				return false, fmt.Errorf("repair malformed portable store db: %w", err)
 			}
-			sourceHealthErr = sqliteStoreHealth(ctx, sourceDBPath)
+			sourceHealthErr = validatePortableSQLiteFile(ctx, sourceDBPath, sourceDBPath)
+			if sourceHealthErr != nil && isPortableSourceRepairableHealthError(sourceHealthErr) {
+				reclone, err := recloneMalformedPortableStoreForDB(ctx, sourceDBPath, configPath)
+				recordPortableRepairState(statePath, reclone, err)
+				if err != nil {
+					return false, fmt.Errorf("reclone malformed portable store db: %w", err)
+				}
+				sourceHealthErr = validatePortableSQLiteFile(ctx, sourceDBPath, sourceDBPath)
+			}
 		}
 		if sourceHealthErr != nil {
 			return false, fmt.Errorf("check portable source db: %w", sourceHealthErr)
@@ -207,7 +277,7 @@ func refreshPortableRuntimeDB(ctx context.Context, sourceDBPath, mirrorPath stri
 	if !needsCopy {
 		return false, nil
 	}
-	if err := copyFileAtomic(sourceDBPath, mirrorPath); err != nil {
+	if err := copySQLiteFileAtomicVerified(ctx, sourceDBPath, mirrorPath); err != nil {
 		return false, err
 	}
 	if isRepairablePortableSource {
@@ -223,6 +293,10 @@ type portableStoreRefreshState struct {
 	Error               string `json:"error,omitempty"`
 	MirrorHealthModTime string `json:"mirror_health_mod_time,omitempty"`
 	MirrorHealthSize    int64  `json:"mirror_health_size,omitempty"`
+	LastRepair          string `json:"last_repair,omitempty"`
+	LastRepairBackup    string `json:"last_repair_backup,omitempty"`
+	LastRepairAt        string `json:"last_repair_at,omitempty"`
+	LastRepairError     string `json:"last_repair_error,omitempty"`
 }
 
 func refreshPortableStoreForDBIfDue(ctx context.Context, sourceDBPath, mirrorPath string) error {
@@ -312,6 +386,25 @@ func writePortableStoreRefreshState(path string, state portableStoreRefreshState
 	return writeAtomicFile(path, data, 0o600)
 }
 
+func recordPortableRepairState(path string, result portableRepairResult, repairErr error) {
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(result.Action) == "" {
+		return
+	}
+	state := readPortableStoreRefreshState(path)
+	state.LastRepair = result.Action
+	state.LastRepairAt = time.Now().UTC().Format(time.RFC3339Nano)
+	state.LastRepairBackup = result.DBBackupPath
+	if result.StoreBackupPath != "" {
+		state.LastRepairBackup = result.StoreBackupPath
+	}
+	if repairErr != nil {
+		state.LastRepairError = repairErr.Error()
+	} else {
+		state.LastRepairError = ""
+	}
+	_ = writePortableStoreRefreshState(path, state)
+}
+
 func sqliteStoreOpenHealth(ctx context.Context, path string) error {
 	if strings.TrimSpace(path) == "" {
 		return os.ErrNotExist
@@ -383,6 +476,83 @@ func sqliteStoreHealth(ctx context.Context, path string) error {
 	return nil
 }
 
+type portableDBManifest struct {
+	Schema      string `json:"schema,omitempty"`
+	ExportedAt  string `json:"exportedAt,omitempty"`
+	OutputPath  string `json:"outputPath,omitempty"`
+	OutputBytes int64  `json:"outputBytes,omitempty"`
+	SHA256      string `json:"sha256,omitempty"`
+	QuickCheck  string `json:"quickCheck,omitempty"`
+}
+
+func portableDBManifestPath(dbPath string) string {
+	return dbPath + ".manifest.json"
+}
+
+func validatePortableSQLiteFile(ctx context.Context, dbPath, manifestDBPath string) error {
+	if err := sqliteStoreHealth(ctx, dbPath); err != nil {
+		return err
+	}
+	return validatePortableDBManifest(dbPath, portableDBManifestPath(manifestDBPath))
+}
+
+func validatePortableDBManifest(dbPath, manifestPath string) error {
+	manifest, ok, err := readPortableDBManifest(manifestPath)
+	if err != nil {
+		return fmt.Errorf("portable manifest mismatch: %w", err)
+	}
+	if !ok {
+		return nil
+	}
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(manifest.Schema) == "" {
+		return fmt.Errorf("portable manifest mismatch: schema missing")
+	}
+	if manifest.OutputBytes <= 0 {
+		return fmt.Errorf("portable manifest mismatch: outputBytes missing")
+	}
+	if strings.TrimSpace(manifest.SHA256) == "" {
+		return fmt.Errorf("portable manifest mismatch: sha256 missing")
+	}
+	if strings.TrimSpace(manifest.QuickCheck) != "ok" {
+		return fmt.Errorf("portable manifest mismatch: quickCheck %q", manifest.QuickCheck)
+	}
+	if manifest.OutputBytes > 0 && info.Size() != manifest.OutputBytes {
+		return fmt.Errorf("portable manifest mismatch: size %d != %d", info.Size(), manifest.OutputBytes)
+	}
+	sum, err := fileSHA256(dbPath)
+	if err != nil {
+		return err
+	}
+	sumText := fmt.Sprintf("%x", sum)
+	if !strings.EqualFold(sumText, strings.TrimSpace(manifest.SHA256)) {
+		return fmt.Errorf("portable manifest mismatch: sha256 %s != %s", sumText, manifest.SHA256)
+	}
+	return nil
+}
+
+func readPortableDBManifest(path string) (portableDBManifest, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return portableDBManifest{}, false, nil
+		}
+		return portableDBManifest{}, false, err
+	}
+	var manifest portableDBManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return portableDBManifest{}, true, fmt.Errorf("read portable manifest: %w", err)
+	}
+	return manifest, true, nil
+}
+
+func isPortableSourceRepairableHealthError(err error) bool {
+	return isSQLiteCorruption(err) || isPortableManifestMismatch(err)
+}
+
 func isSQLiteCorruption(err error) bool {
 	if err == nil {
 		return false
@@ -396,11 +566,15 @@ func isSQLiteCorruption(err error) bool {
 		strings.Contains(message, "(11)")
 }
 
-func preserveMalformedPortableDB(root, dbPath string) error {
+func isPortableManifestMismatch(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "portable manifest mismatch")
+}
+
+func preserveMalformedPortableDB(root, dbPath string) (string, error) {
 	timestamp := time.Now().UTC().Format("20060102T150405Z")
 	backupDir := filepath.Join(filepath.Dir(root), "backups", "malformed-"+timestamp)
 	if err := os.MkdirAll(backupDir, 0o755); err != nil {
-		return fmt.Errorf("create malformed db backup: %w", err)
+		return "", fmt.Errorf("create malformed db backup: %w", err)
 	}
 	for _, path := range []string{
 		dbPath,
@@ -412,17 +586,17 @@ func preserveMalformedPortableDB(root, dbPath string) error {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return err
+			return "", err
 		}
 		target := filepath.Join(backupDir, filepath.Base(path)+".malformed")
 		if strings.HasSuffix(path, ".manifest.json") {
 			target = filepath.Join(backupDir, filepath.Base(path))
 		}
 		if err := copyFileAtomic(path, target); err != nil {
-			return fmt.Errorf("preserve malformed db evidence: %w", err)
+			return "", fmt.Errorf("preserve malformed db evidence: %w", err)
 		}
 	}
-	return nil
+	return backupDir, nil
 }
 
 func recentPortableRefresh(value string, now time.Time, maxAge time.Duration) bool {
@@ -491,6 +665,49 @@ func copyFileAtomic(sourcePath, targetPath string) error {
 	return nil
 }
 
+func copySQLiteFileAtomicVerified(ctx context.Context, sourcePath, targetPath string) error {
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return fmt.Errorf("create portable runtime dir: %w", err)
+	}
+	source, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("open portable source db: %w", err)
+	}
+	defer source.Close()
+	temp, err := os.CreateTemp(filepath.Dir(targetPath), "."+filepath.Base(targetPath)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create portable runtime temp db: %w", err)
+	}
+	tempPath := temp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if _, err := io.Copy(temp, source); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("copy portable runtime db: %w", err)
+	}
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("chmod portable runtime db: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close portable runtime db: %w", err)
+	}
+	if err := validatePortableSQLiteFile(ctx, tempPath, sourcePath); err != nil {
+		return fmt.Errorf("validate portable runtime temp db: %w", err)
+	}
+	if err := os.Rename(tempPath, targetPath); err != nil {
+		return fmt.Errorf("replace portable runtime db: %w", err)
+	}
+	cleanup = false
+	_ = os.Remove(targetPath + "-wal")
+	_ = os.Remove(targetPath + "-shm")
+	return nil
+}
+
 func portableStoreRoot(dbPath string) (string, bool) {
 	dir := filepath.Clean(filepath.Dir(dbPath))
 	for {
@@ -508,6 +725,18 @@ func portableStoreRoot(dbPath string) (string, bool) {
 func portableStoreIsGitWorktree(ctx context.Context, dir string) bool {
 	out, err := gitOutput(ctx, "", "-C", dir, "rev-parse", "--is-inside-work-tree")
 	return err == nil && strings.TrimSpace(out) == "true"
+}
+
+func portableStoreRemoteURL(ctx context.Context, root string) string {
+	branch := currentGitBranch(ctx, root)
+	remoteName := gitBranchRemote(ctx, root, branch)
+	if remoteName != "" {
+		remote, err := gitConfigValue(ctx, root, "remote."+remoteName+".url")
+		if err == nil && strings.TrimSpace(remote) != "" {
+			return strings.TrimSpace(remote)
+		}
+	}
+	return gitRemoteURL(ctx, root)
 }
 
 func portableStoreRepairAllowed(root, configPath string) bool {
@@ -533,4 +762,81 @@ func gitWorktreeClean(ctx context.Context, dir string) bool {
 		return false
 	}
 	return true
+}
+
+func fastForwardGitCheckoutWithStaleIndexLockRetry(ctx context.Context, root string, quiet bool) (bool, error) {
+	err := fastForwardGitCheckout(ctx, root, quiet)
+	if err == nil {
+		return false, nil
+	}
+	if !isGitIndexLockError(err) {
+		return false, err
+	}
+	removed, cleanupErr := removeStaleGitIndexLock(ctx, root, staleGitIndexLockAge)
+	if cleanupErr != nil || !removed {
+		if cleanupErr != nil {
+			return false, fmt.Errorf("%w; cleanup stale index lock: %v", err, cleanupErr)
+		}
+		return false, err
+	}
+	return true, fastForwardGitCheckout(ctx, root, quiet)
+}
+
+func runGitWithStaleIndexLockRetry(ctx context.Context, root string, args ...string) (bool, error) {
+	err := runGit(ctx, "", args...)
+	if err == nil {
+		return false, nil
+	}
+	if !isGitIndexLockError(err) {
+		return false, err
+	}
+	removed, cleanupErr := removeStaleGitIndexLock(ctx, root, staleGitIndexLockAge)
+	if cleanupErr != nil || !removed {
+		if cleanupErr != nil {
+			return false, fmt.Errorf("%w; cleanup stale index lock: %v", err, cleanupErr)
+		}
+		return false, err
+	}
+	return true, runGit(ctx, "", args...)
+}
+
+func isGitIndexLockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "index.lock") && strings.Contains(message, "file exists")
+}
+
+func removeStaleGitIndexLock(ctx context.Context, root string, minAge time.Duration) (bool, error) {
+	lockPath := filepath.Join(root, ".git", "index.lock")
+	info, err := os.Stat(lockPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if minAge > 0 && time.Since(info.ModTime()) < minAge {
+		return false, nil
+	}
+	lsofPath, err := exec.LookPath("lsof")
+	if err != nil {
+		return false, nil
+	}
+	cmd := exec.CommandContext(ctx, lsofPath, lockPath)
+	out, err := cmd.CombinedOutput()
+	if strings.TrimSpace(string(out)) != "" {
+		return false, nil
+	}
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			return false, nil
+		}
+	}
+	if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return true, nil
 }

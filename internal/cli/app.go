@@ -2329,15 +2329,57 @@ func (a *App) runPortablePrune(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer rt.Store.Close()
 	stats, err := rt.Store.PrunePortablePayloads(ctx, store.PortablePruneOptions{
 		BodyChars: bodyChars,
 		Vacuum:    !*noVacuum,
 	})
+	closeErr := rt.Store.Close()
 	if err != nil {
 		return err
 	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err := sqliteStoreHealth(ctx, stats.DBPath); err != nil {
+		return fmt.Errorf("validate portable db after prune: %w", err)
+	}
+	manifestPath, sha, err := writePortableDBManifest(stats)
+	if err != nil {
+		return err
+	}
+	stats.ManifestPath = manifestPath
+	stats.SHA256 = sha
+	stats.QuickCheck = "ok"
 	return a.writeOutput("portable prune", stats, true)
+}
+
+func writePortableDBManifest(stats store.PortablePruneStats) (string, string, error) {
+	info, err := os.Stat(stats.DBPath)
+	if err != nil {
+		return "", "", fmt.Errorf("stat portable db for manifest: %w", err)
+	}
+	sum, err := fileSHA256(stats.DBPath)
+	if err != nil {
+		return "", "", fmt.Errorf("hash portable db for manifest: %w", err)
+	}
+	sumText := fmt.Sprintf("%x", sum)
+	manifest := portableDBManifest{
+		Schema:      "gitcrawl-portable-sync-v2",
+		ExportedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+		OutputPath:  filepath.Base(stats.DBPath),
+		OutputBytes: info.Size(),
+		SHA256:      sumText,
+		QuickCheck:  "ok",
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	manifestPath := portableDBManifestPath(stats.DBPath)
+	if err := writeAtomicFile(manifestPath, append(data, '\n'), 0o644); err != nil {
+		return "", "", fmt.Errorf("write portable db manifest: %w", err)
+	}
+	return manifestPath, sumText, nil
 }
 
 func defaultPortableStoreDir(configPath, remoteURL string) string {
@@ -2657,6 +2699,10 @@ func (a *App) runDoctor(ctx context.Context, args []string) error {
 		return err
 	}
 	storeStatus := store.Status{DBPath: cfg.DBPath}
+	sourceHealth := sqliteDBHealth(ctx, cfg.DBPath, cfg.DBPath)
+	runtimeHealth := map[string]any{}
+	portableStoreStatus := map[string]any{}
+	repairAction := ""
 	rt, err := a.openLocalRuntimeReadOnly(ctx)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -2664,6 +2710,16 @@ func (a *App) runDoctor(ctx context.Context, args []string) error {
 		}
 	} else {
 		defer rt.Store.Close()
+		sourceHealth = sqliteDBHealth(ctx, rt.SourceDBPath, rt.SourceDBPath)
+		if rt.RemoteSource {
+			runtimeHealth = sqliteDBHealth(ctx, rt.Config.DBPath, rt.SourceDBPath)
+			portableStoreStatus = portableStoreGitStatus(ctx, rt.SourceDBPath)
+			state := readPortableStoreRefreshState(portableStoreRefreshStatePath(rt.Config.DBPath))
+			repairAction = state.LastRepair
+			if repairAction == "" {
+				repairAction = "none"
+			}
+		}
 		storeStatus, err = rt.Store.Status(ctx)
 		if err != nil {
 			return err
@@ -2674,24 +2730,102 @@ func (a *App) runDoctor(ctx context.Context, args []string) error {
 	githubToken := a.resolveGitHubToken(ctx, cfg)
 	openAIKey := config.ResolveOpenAIKey(cfg)
 	return a.writeOutput("doctor", map[string]any{
-		"version":              version,
-		"config_path":          config.ResolvePath(a.configPath),
-		"config_exists":        configExists,
-		"db_path":              cfg.DBPath,
-		"github_token_present": githubToken.Value != "",
-		"github_token_source":  githubToken.Source,
-		"openai_key_present":   openAIKey.Value != "",
-		"openai_key_source":    openAIKey.Source,
-		"repository_count":     storeStatus.RepositoryCount,
-		"thread_count":         storeStatus.ThreadCount,
-		"open_thread_count":    storeStatus.OpenThreadCount,
-		"cluster_count":        storeStatus.ClusterCount,
-		"last_sync_at":         formatOptionalTime(storeStatus.LastSyncAt),
-		"summary_model":        cfg.OpenAI.SummaryModel,
-		"embed_model":          cfg.OpenAI.EmbedModel,
-		"embedding_basis":      cfg.EmbeddingBasis,
-		"api_supported":        false,
+		"version":               version,
+		"config_path":           config.ResolvePath(a.configPath),
+		"config_exists":         configExists,
+		"db_path":               cfg.DBPath,
+		"source_db_health":      sourceHealth,
+		"runtime_db_health":     runtimeHealth,
+		"portable_store_status": portableStoreStatus,
+		"repair_action":         repairAction,
+		"github_token_present":  githubToken.Value != "",
+		"github_token_source":   githubToken.Source,
+		"openai_key_present":    openAIKey.Value != "",
+		"openai_key_source":     openAIKey.Source,
+		"repository_count":      storeStatus.RepositoryCount,
+		"thread_count":          storeStatus.ThreadCount,
+		"open_thread_count":     storeStatus.OpenThreadCount,
+		"cluster_count":         storeStatus.ClusterCount,
+		"last_sync_at":          formatOptionalTime(storeStatus.LastSyncAt),
+		"summary_model":         cfg.OpenAI.SummaryModel,
+		"embed_model":           cfg.OpenAI.EmbedModel,
+		"embedding_basis":       cfg.EmbeddingBasis,
+		"api_supported":         false,
 	}, true)
+}
+
+func sqliteDBHealth(ctx context.Context, dbPath, manifestDBPath string) map[string]any {
+	result := map[string]any{
+		"path":   dbPath,
+		"exists": false,
+		"health": "missing",
+	}
+	if strings.TrimSpace(dbPath) == "" {
+		return result
+	}
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			result["health"] = "error"
+			result["error"] = err.Error()
+		}
+		return result
+	}
+	result["exists"] = true
+	result["size"] = info.Size()
+	if sum, err := fileSHA256(dbPath); err == nil {
+		result["sha256"] = fmt.Sprintf("%x", sum)
+	}
+	manifestPath := portableDBManifestPath(manifestDBPath)
+	result["manifest_path"] = manifestPath
+	if manifest, ok, err := readPortableDBManifest(manifestPath); err != nil {
+		result["manifest"] = "error"
+		result["manifest_error"] = err.Error()
+	} else if ok {
+		result["manifest"] = "present"
+		if manifest.OutputBytes > 0 {
+			result["manifest_bytes"] = manifest.OutputBytes
+		}
+		if manifest.SHA256 != "" {
+			result["manifest_sha256"] = manifest.SHA256
+		}
+	} else {
+		result["manifest"] = "missing"
+	}
+	if err := validatePortableSQLiteFile(ctx, dbPath, manifestDBPath); err != nil {
+		result["health"] = "error"
+		result["error"] = err.Error()
+	} else {
+		result["health"] = "ok"
+	}
+	return result
+}
+
+func portableStoreGitStatus(ctx context.Context, dbPath string) map[string]any {
+	result := map[string]any{}
+	root, ok := portableStoreRoot(dbPath)
+	if !ok {
+		result["state"] = "not_portable"
+		return result
+	}
+	result["root"] = root
+	if !portableStoreIsGitWorktree(ctx, root) {
+		result["state"] = "not_git"
+		return result
+	}
+	if gitWorktreeClean(ctx, root) {
+		result["state"] = "clean"
+	} else {
+		result["state"] = "dirty"
+	}
+	if counts, err := gitOutput(ctx, "", "-C", root, "rev-list", "--left-right", "--count", "HEAD...@{upstream}"); err == nil {
+		parts := strings.Fields(counts)
+		if len(parts) == 2 {
+			result["ahead"] = parts[0]
+			result["behind"] = parts[1]
+		}
+	}
+	return result
 }
 
 func (a *App) runMetadata(args []string) error {

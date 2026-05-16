@@ -108,9 +108,7 @@ func TestPortableRuntimeHelperBranches(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatalf("mkdir git dir: %v", err)
 	}
-	if err := os.WriteFile(dbPath, []byte("db-v1"), 0o644); err != nil {
-		t.Fatalf("write db: %v", err)
-	}
+	seedPortableThread(t, dbPath, 1, "portable helper issue")
 	app := New()
 	app.configPath = filepath.Join(dir, "config.toml")
 	mirror, err := app.portableRuntimeDBPath(dbPath)

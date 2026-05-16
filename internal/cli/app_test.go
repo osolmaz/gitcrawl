@@ -506,6 +506,9 @@ func TestSyncPortableStoreHonorsBranchRemote(t *testing.T) {
 	if err := runGit(ctx, "", "-C", checkoutDir, "remote", "rename", "origin", "store"); err != nil {
 		t.Fatalf("rename remote: %v", err)
 	}
+	if got := portableStoreRemoteURL(ctx, checkoutDir); got != remoteDir {
+		t.Fatalf("portable store remote URL = %q, want %q", got, remoteDir)
+	}
 	if err := os.WriteFile(dbPath, []byte("remote-v2"), 0o644); err != nil {
 		t.Fatalf("write updated remote db: %v", err)
 	}
@@ -816,6 +819,75 @@ func TestReadCommandRepairsMalformedDirtyPortableStore(t *testing.T) {
 	}
 }
 
+func TestRecloneMalformedPortableStorePreservesBranch(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	remoteDir := filepath.Join(dir, "remote")
+	checkoutDir := filepath.Join(dir, "checkout")
+	dbRel := filepath.Join("data", "openclaw__openclaw.sync.db")
+	if err := os.MkdirAll(filepath.Join(remoteDir, "data"), 0o755); err != nil {
+		t.Fatalf("mkdir remote data: %v", err)
+	}
+	if err := runGit(ctx, remoteDir, "init", "-b", "main"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	seedPortableThread(t, filepath.Join(remoteDir, dbRel), 1, "main issue")
+	if err := runGit(ctx, remoteDir, "add", dbRel); err != nil {
+		t.Fatalf("git add main seed: %v", err)
+	}
+	if err := runGit(ctx, remoteDir, "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "seed main store"); err != nil {
+		t.Fatalf("git commit main seed: %v", err)
+	}
+	if err := runGit(ctx, remoteDir, "checkout", "-b", "portable"); err != nil {
+		t.Fatalf("checkout portable branch: %v", err)
+	}
+	seedPortableThread(t, filepath.Join(remoteDir, dbRel), 2, "portable branch issue")
+	if err := runGit(ctx, remoteDir, "add", dbRel); err != nil {
+		t.Fatalf("git add branch seed: %v", err)
+	}
+	if err := runGit(ctx, remoteDir, "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "seed branch store"); err != nil {
+		t.Fatalf("git commit branch seed: %v", err)
+	}
+	if err := runGit(ctx, remoteDir, "checkout", "main"); err != nil {
+		t.Fatalf("restore remote main branch: %v", err)
+	}
+	if _, err := syncPortableStore(ctx, remoteDir, checkoutDir); err != nil {
+		t.Fatalf("clone portable store: %v", err)
+	}
+	if err := runGit(ctx, "", "-C", checkoutDir, "fetch", "origin", "portable:refs/remotes/origin/portable"); err != nil {
+		t.Fatalf("fetch portable branch: %v", err)
+	}
+	if err := runGit(ctx, "", "-C", checkoutDir, "checkout", "-b", "portable", "origin/portable"); err != nil {
+		t.Fatalf("checkout portable branch: %v", err)
+	}
+	checkoutDB := filepath.Join(checkoutDir, dbRel)
+	if err := os.Truncate(checkoutDB, 128); err != nil {
+		t.Fatalf("truncate checkout db: %v", err)
+	}
+	if _, err := recloneMalformedPortableStoreForDB(ctx, checkoutDB, filepath.Join(dir, "config.toml")); err != nil {
+		t.Fatalf("reclone malformed portable store: %v", err)
+	}
+	if got := currentGitBranch(ctx, checkoutDir); got != "portable" {
+		t.Fatalf("recloned branch = %q, want portable", got)
+	}
+	st, err := store.OpenReadOnly(ctx, checkoutDB)
+	if err != nil {
+		t.Fatalf("open recloned db: %v", err)
+	}
+	defer st.Close()
+	repo, err := st.RepositoryByFullName(ctx, "openclaw/openclaw")
+	if err != nil {
+		t.Fatalf("read repo: %v", err)
+	}
+	threads, err := st.ListThreads(ctx, repo.ID, true)
+	if err != nil {
+		t.Fatalf("list threads: %v", err)
+	}
+	if len(threads) != 2 {
+		t.Fatalf("recloned db threads = %d, want branch contents with 2 threads", len(threads))
+	}
+}
+
 func TestPortableRuntimePropagatesNonCorruptionSourceErrors(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -870,6 +942,69 @@ func TestPortableRuntimePropagatesNonCorruptionSourceErrors(t *testing.T) {
 	}
 	if err := sqliteStoreHealth(ctx, mirrorPath); err != nil {
 		t.Fatalf("healthy mirror should remain usable: %v", err)
+	}
+}
+
+func TestPortableRuntimeRejectsManifestMismatchBeforeReplacingMirror(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	checkoutDir := filepath.Join(dir, "checkout")
+	dbRel := filepath.Join("data", "openclaw__openclaw.sync.db")
+	checkoutDB := filepath.Join(checkoutDir, dbRel)
+	mirrorPath := filepath.Join(dir, "runtime", dbRel)
+	if err := os.MkdirAll(filepath.Dir(checkoutDB), 0o755); err != nil {
+		t.Fatalf("mkdir checkout db: %v", err)
+	}
+	if err := runGit(ctx, checkoutDir, "init", "-b", "main"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	seedPortableThread(t, checkoutDB, 1, "source issue")
+	if err := copyFileAtomic(checkoutDB, mirrorPath); err != nil {
+		t.Fatalf("seed mirror: %v", err)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(mirrorPath, past, past); err != nil {
+		t.Fatalf("age mirror db: %v", err)
+	}
+	before, err := fileSHA256(mirrorPath)
+	if err != nil {
+		t.Fatalf("hash mirror before: %v", err)
+	}
+	seedPortableThread(t, checkoutDB, 2, "new source issue")
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(checkoutDB, future, future); err != nil {
+		t.Fatalf("age source db: %v", err)
+	}
+	badManifest := portableDBManifest{OutputBytes: 1, SHA256: strings.Repeat("0", 64)}
+	data, err := json.Marshal(badManifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := os.WriteFile(portableDBManifestPath(checkoutDB), data, 0o644); err != nil {
+		t.Fatalf("write bad manifest: %v", err)
+	}
+	if err := copySQLiteFileAtomicVerified(ctx, checkoutDB, mirrorPath); err == nil || !strings.Contains(err.Error(), "portable manifest mismatch") {
+		t.Fatalf("manifest mismatch should fail without copy, err=%v", err)
+	}
+	after, err := fileSHA256(mirrorPath)
+	if err != nil {
+		t.Fatalf("hash mirror after: %v", err)
+	}
+	if after != before {
+		t.Fatal("runtime mirror should not be replaced by source with bad manifest")
+	}
+	if err := os.WriteFile(portableDBManifestPath(checkoutDB), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write incomplete manifest: %v", err)
+	}
+	if err := copySQLiteFileAtomicVerified(ctx, checkoutDB, mirrorPath); err == nil || !strings.Contains(err.Error(), "schema missing") {
+		t.Fatalf("incomplete manifest should fail without copy, err=%v", err)
+	}
+	if err := os.WriteFile(portableDBManifestPath(checkoutDB), []byte("{"), 0o644); err != nil {
+		t.Fatalf("write malformed manifest: %v", err)
+	}
+	err = validatePortableSQLiteFile(ctx, checkoutDB, checkoutDB)
+	if err == nil || !isPortableSourceRepairableHealthError(err) {
+		t.Fatalf("malformed manifest should be a repairable health error, got %v", err)
 	}
 }
 
@@ -1062,8 +1197,21 @@ func TestPortablePruneCommand(t *testing.T) {
 		t.Fatalf("init: %v", err)
 	}
 	seed := New()
+	var stdout bytes.Buffer
+	seed.Stdout = &stdout
 	if err := seed.Run(context.Background(), []string{"--config", configPath, "portable", "prune", "--body-chars", "8", "--no-vacuum", "--json"}); err != nil {
 		t.Fatalf("portable prune: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("parse prune json: %v\n%s", err, stdout.String())
+	}
+	manifestPath, _ := payload["manifest_path"].(string)
+	if manifestPath == "" {
+		t.Fatalf("manifest_path missing from prune output: %s", stdout.String())
+	}
+	if err := validatePortableSQLiteFile(context.Background(), dbPath, dbPath); err != nil {
+		t.Fatalf("portable prune should leave valid db + manifest: %v", err)
 	}
 }
 

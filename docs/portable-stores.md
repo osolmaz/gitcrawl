@@ -46,6 +46,7 @@ Read-only commands (`search`, `threads`, `clusters`, `cluster-detail`, `neighbor
 - SSH attempts are bounded so an offline remote does not hang the CLI
 - Stale SQLite sidecars (WAL, SHM) are cleared after the pull so queries see freshly pulled data
 - Local Git pull configuration that tries to rebase onto multiple branch merge refs is handled cleanly
+- SQLite files are copied through a temporary runtime database, checked with `quick_check`, and verified against the portable manifest before replacing the previous runtime mirror
 
 If the remote is unreachable, the read still answers from the local checkout.
 
@@ -68,6 +69,8 @@ gitcrawl portable prune --body-chars 256       # default
 gitcrawl portable prune --body-chars 512 --no-vacuum
 gitcrawl portable prune --json
 ```
+
+`portable prune` validates the pruned database with SQLite `quick_check`, writes a `.manifest.json` next to the database with size and SHA-256 integrity, and includes the manifest path plus hash in JSON output. Consumers use that manifest to reject incomplete or mismatched portable-store downloads before replacing a known-good runtime mirror.
 
 `prune` converts the database into the portable v2 backup format and (by default) runs SQLite `VACUUM` to reclaim space. The result is a smaller database suitable for committing back to Git.
 

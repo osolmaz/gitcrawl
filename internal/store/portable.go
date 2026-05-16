@@ -16,9 +16,12 @@ type PortablePruneOptions struct {
 
 type PortablePruneStats struct {
 	DBPath              string   `json:"db_path"`
+	ManifestPath        string   `json:"manifest_path,omitempty"`
+	SHA256              string   `json:"sha256,omitempty"`
 	BodyChars           int      `json:"body_chars"`
 	BytesBefore         int64    `json:"bytes_before"`
 	BytesAfter          int64    `json:"bytes_after"`
+	QuickCheck          string   `json:"quick_check,omitempty"`
 	ThreadsPruned       int64    `json:"threads_pruned"`
 	CommentsPruned      int64    `json:"comments_pruned"`
 	RepositoriesPruned  int64    `json:"repositories_pruned"`

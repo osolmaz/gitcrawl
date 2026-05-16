@@ -125,4 +125,45 @@ func TestPortableRuntimeUtilityBranches(t *testing.T) {
 	if !portableStoreRepairAllowed(explicitStore, explicitConfigPath) {
 		t.Fatal("explicit-config default portable store should be repairable")
 	}
+	lockRoot := filepath.Join(dir, "locked-store")
+	lockPath = filepath.Join(lockRoot, ".git", "index.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatalf("mkdir lock dir: %v", err)
+	}
+	if err := os.WriteFile(lockPath, nil, 0o644); err != nil {
+		t.Fatalf("write index lock: %v", err)
+	}
+	oldLock := now.Add(-time.Minute)
+	if err := os.Chtimes(lockPath, oldLock, oldLock); err != nil {
+		t.Fatalf("age index lock: %v", err)
+	}
+	removed, err := removeStaleGitIndexLock(context.Background(), lockRoot, staleGitIndexLockAge)
+	if err != nil || !removed {
+		t.Fatalf("remove stale index lock removed=%v err=%v", removed, err)
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("stale index lock should be removed, err=%v", err)
+	}
+
+	if err := os.WriteFile(lockPath, nil, 0o644); err != nil {
+		t.Fatalf("rewrite index lock: %v", err)
+	}
+	if err := os.Chtimes(lockPath, oldLock, oldLock); err != nil {
+		t.Fatalf("age index lock with failing lsof: %v", err)
+	}
+	fakeBin := filepath.Join(dir, "fake-bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("mkdir fake bin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeBin, "lsof"), []byte("#!/bin/sh\nexit 2\n"), 0o755); err != nil {
+		t.Fatalf("write fake lsof: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	removed, err = removeStaleGitIndexLock(context.Background(), lockRoot, staleGitIndexLockAge)
+	if err != nil || removed {
+		t.Fatalf("failing lsof should not remove lock, removed=%v err=%v", removed, err)
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("index lock should remain when lsof fails: %v", err)
+	}
 }
