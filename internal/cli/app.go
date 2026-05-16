@@ -2656,7 +2656,7 @@ func (a *App) runDoctor(ctx context.Context, args []string) error {
 		storeStatus.DBPath = cfg.DBPath
 	}
 
-	githubToken := config.ResolveGitHubToken(cfg)
+	githubToken := a.resolveGitHubToken(ctx, cfg)
 	openAIKey := config.ResolveOpenAIKey(cfg)
 	return a.writeOutput("doctor", map[string]any{
 		"version":              version,
