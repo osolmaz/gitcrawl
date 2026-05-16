@@ -117,11 +117,11 @@ func TestPortableRuntimeHelperBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runtime path: %v", err)
 	}
-	changed, err := refreshPortableRuntimeDB(ctx, dbPath, mirror, false)
+	changed, err := refreshPortableRuntimeDB(ctx, dbPath, mirror, false, app.configPath)
 	if err != nil || !changed {
 		t.Fatalf("initial runtime copy changed=%v err=%v", changed, err)
 	}
-	changed, err = refreshPortableRuntimeDB(ctx, dbPath, mirror, false)
+	changed, err = refreshPortableRuntimeDB(ctx, dbPath, mirror, false, app.configPath)
 	if err != nil || changed {
 		t.Fatalf("second runtime copy changed=%v err=%v", changed, err)
 	}

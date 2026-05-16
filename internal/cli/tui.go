@@ -59,6 +59,7 @@ type clusterBrowserPayload struct {
 	DBLocation         string                 `json:"db_location,omitempty"`
 	DBRefreshSource    string                 `json:"-"`
 	DBRuntimePath      string                 `json:"-"`
+	ConfigPath         string                 `json:"-"`
 	Sort               string                 `json:"sort"`
 	MinSize            int                    `json:"min_size"`
 	Limit              int                    `json:"limit,omitempty"`
@@ -505,7 +506,7 @@ func (m clusterBrowserModel) remoteRefreshCmd() tea.Cmd {
 	sourceDBPath := m.payload.DBRefreshSource
 	runtimeDBPath := m.payload.DBRuntimePath
 	return func() tea.Msg {
-		changed, err := refreshPortableRuntimeDB(m.ctx, sourceDBPath, runtimeDBPath, true)
+		changed, err := refreshPortableRuntimeDB(m.ctx, sourceDBPath, runtimeDBPath, true, m.payload.ConfigPath)
 		return tuiRemoteRefreshMsg{changed: changed, err: err}
 	}
 }

@@ -1450,6 +1450,7 @@ func (a *App) runTUI(ctx context.Context, args []string) error {
 		DBLocation:         databaseSourceLocation(ctx, rt.SourceDBPath),
 		DBRefreshSource:    remoteRefreshSource(rt),
 		DBRuntimePath:      remoteRuntimePath(rt),
+		ConfigPath:         a.configPath,
 		Sort:               sort,
 		MinSize:            minSize,
 		Limit:              limit,
@@ -2381,6 +2382,9 @@ func syncPortableStore(ctx context.Context, remoteURL, dir string) (string, erro
 		if err := ensurePortableStoreRemote(ctx, remoteURL, dir); err != nil {
 			return "", err
 		}
+		if err := markPortableStoreCheckout(dir); err != nil {
+			return "", err
+		}
 		if !gitWorktreeClean(ctx, dir) {
 			if resetErr := runGit(ctx, "", "-C", dir, "reset", "--hard", "HEAD"); resetErr != nil {
 				return "", resetErr
@@ -2424,10 +2428,21 @@ func syncPortableStore(ctx context.Context, remoteURL, dir string) (string, erro
 	if err := runGit(ctx, "", "clone", "--depth", "1", remoteURL, dir); err != nil {
 		return "", err
 	}
+	if err := markPortableStoreCheckout(dir); err != nil {
+		return "", err
+	}
 	if err := removePortableSQLiteSidecars(dir); err != nil {
 		return "", err
 	}
 	return "cloned", nil
+}
+
+func markPortableStoreCheckout(dir string) error {
+	infoDir := filepath.Join(dir, ".git", "info")
+	if err := os.MkdirAll(infoDir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(infoDir, portableStoreMarkerFile), []byte("gitcrawl portable store\n"), 0o644)
 }
 
 func ensurePortableStoreRemote(ctx context.Context, remoteURL, dir string) error {

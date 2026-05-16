@@ -2,6 +2,7 @@
 
 ## 0.3.5 - Unreleased
 
+- Repair malformed portable-store SQLite caches by preserving the bad DB, resetting/pulling the store checkout, and recopying a healthy runtime mirror before local reads continue.
 - Replay GitHub request bodies on rate-limit retries so GraphQL POST retries keep their JSON payload.
 - Send GitHub Enterprise GraphQL requests to `/api/graphql` when the REST API base URL ends in `/api/v3`.
 - Reject durable cluster saves with empty member lists instead of leaving stale active memberships.

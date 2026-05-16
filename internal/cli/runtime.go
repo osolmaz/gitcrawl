@@ -24,8 +24,10 @@ type localRuntime struct {
 }
 
 const portableStoreRefreshTimeout = 15 * time.Second
+const portableStoreRepairTimeout = 90 * time.Second
 const portableStoreRefreshTTL = 2 * time.Minute
 const portableStoreRefreshFailureBackoff = time.Minute
+const portableStoreMarkerFile = "gitcrawl-portable-store"
 
 var errPortableStoreDirty = errors.New("portable store checkout has local changes")
 
@@ -93,11 +95,41 @@ func refreshPortableStoreForDB(ctx context.Context, dbPath string) error {
 	if !ok {
 		return nil
 	}
+	if !portableStoreIsGitWorktree(ctx, root) {
+		return nil
+	}
 	if !gitWorktreeClean(ctx, root) {
 		return errPortableStoreDirty
 	}
 	pullCtx, cancel := context.WithTimeout(ctx, portableStoreRefreshTimeout)
 	defer cancel()
+	if err := fastForwardGitCheckout(pullCtx, root, true); err != nil {
+		return err
+	}
+	return removePortableSQLiteSidecars(root)
+}
+
+func repairMalformedPortableStoreForDB(ctx context.Context, dbPath, configPath string) error {
+	root, ok := portableStoreRoot(dbPath)
+	if !ok {
+		return nil
+	}
+	if !portableStoreIsGitWorktree(ctx, root) {
+		return nil
+	}
+	if !portableStoreRepairAllowed(root, configPath) {
+		return fmt.Errorf("refuse destructive repair for unmarked portable store checkout %s", root)
+	}
+	if err := preserveMalformedPortableDB(root, dbPath); err != nil {
+		return err
+	}
+	pullCtx, cancel := context.WithTimeout(ctx, portableStoreRepairTimeout)
+	defer cancel()
+	if !gitWorktreeClean(pullCtx, root) {
+		if err := runGit(pullCtx, "", "-C", root, "reset", "--hard", "HEAD"); err != nil {
+			return err
+		}
+	}
 	if err := fastForwardGitCheckout(pullCtx, root, true); err != nil {
 		return err
 	}
@@ -111,7 +143,7 @@ func (a *App) ensurePortableRuntimeDB(ctx context.Context, sourceDBPath string, 
 	if err != nil {
 		return "", false, err
 	}
-	changed, err := refreshPortableRuntimeDB(ctx, sourceDBPath, mirrorPath, refresh)
+	changed, err := refreshPortableRuntimeDB(ctx, sourceDBPath, mirrorPath, refresh, a.configPath)
 	return mirrorPath, changed, err
 }
 
@@ -131,9 +163,11 @@ func (a *App) portableRuntimeDBPath(sourceDBPath string) (string, error) {
 	return filepath.Join(filepath.Dir(config.ResolvePath(a.configPath)), "runtime", name, rel), nil
 }
 
-func refreshPortableRuntimeDB(ctx context.Context, sourceDBPath, mirrorPath string, refresh bool) (bool, error) {
+func refreshPortableRuntimeDB(ctx context.Context, sourceDBPath, mirrorPath string, refresh bool, configPath string) (bool, error) {
 	portableRuntimeMu.Lock()
 	defer portableRuntimeMu.Unlock()
+	portableRoot, isPortableSource := portableStoreRoot(sourceDBPath)
+	isRepairablePortableSource := isPortableSource && portableStoreIsGitWorktree(ctx, portableRoot)
 	if refresh {
 		_ = refreshPortableStoreForDBIfDue(ctx, sourceDBPath, mirrorPath)
 	}
@@ -141,20 +175,54 @@ func refreshPortableRuntimeDB(ctx context.Context, sourceDBPath, mirrorPath stri
 	if err != nil {
 		return false, err
 	}
+	statePath := portableStoreRefreshStatePath(mirrorPath)
+	mirrorCorrupt := false
+	if isRepairablePortableSource && !needsCopy {
+		mirrorHealthErr := sqliteStoreCachedHealth(ctx, mirrorPath, statePath)
+		if mirrorHealthErr != nil {
+			if !isSQLiteCorruption(mirrorHealthErr) {
+				return false, fmt.Errorf("check portable runtime db: %w", mirrorHealthErr)
+			}
+			mirrorCorrupt = true
+			needsCopy = true
+		}
+	}
+	if needsCopy && isRepairablePortableSource {
+		sourceHealthErr := sqliteStoreHealth(ctx, sourceDBPath)
+		if sourceHealthErr != nil && isSQLiteCorruption(sourceHealthErr) {
+			if err := repairMalformedPortableStoreForDB(ctx, sourceDBPath, configPath); err != nil {
+				if !mirrorCorrupt {
+					if mirrorHealthErr := sqliteStoreHealth(ctx, mirrorPath); mirrorHealthErr == nil {
+						return false, nil
+					}
+				}
+				return false, fmt.Errorf("repair malformed portable store db: %w", err)
+			}
+			sourceHealthErr = sqliteStoreHealth(ctx, sourceDBPath)
+		}
+		if sourceHealthErr != nil {
+			return false, fmt.Errorf("check portable source db: %w", sourceHealthErr)
+		}
+	}
 	if !needsCopy {
 		return false, nil
 	}
 	if err := copyFileAtomic(sourceDBPath, mirrorPath); err != nil {
 		return false, err
 	}
+	if isRepairablePortableSource {
+		_ = markSQLiteStoreHealthVerified(mirrorPath, statePath)
+	}
 	return true, nil
 }
 
 type portableStoreRefreshState struct {
-	LastAttempt string `json:"last_attempt,omitempty"`
-	LastSuccess string `json:"last_success,omitempty"`
-	LastFailure string `json:"last_failure,omitempty"`
-	Error       string `json:"error,omitempty"`
+	LastAttempt         string `json:"last_attempt,omitempty"`
+	LastSuccess         string `json:"last_success,omitempty"`
+	LastFailure         string `json:"last_failure,omitempty"`
+	Error               string `json:"error,omitempty"`
+	MirrorHealthModTime string `json:"mirror_health_mod_time,omitempty"`
+	MirrorHealthSize    int64  `json:"mirror_health_size,omitempty"`
 }
 
 func refreshPortableStoreForDBIfDue(ctx context.Context, sourceDBPath, mirrorPath string) error {
@@ -244,6 +312,119 @@ func writePortableStoreRefreshState(path string, state portableStoreRefreshState
 	return writeAtomicFile(path, data, 0o600)
 }
 
+func sqliteStoreOpenHealth(ctx context.Context, path string) error {
+	if strings.TrimSpace(path) == "" {
+		return os.ErrNotExist
+	}
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	st, err := store.OpenReadOnly(ctx, path)
+	if err != nil {
+		return err
+	}
+	return st.Close()
+}
+
+func sqliteStoreCachedHealth(ctx context.Context, path, statePath string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	state := readPortableStoreRefreshState(statePath)
+	modTime := info.ModTime().UTC().Format(time.RFC3339Nano)
+	if state.MirrorHealthSize == info.Size() && state.MirrorHealthModTime == modTime {
+		return sqliteStoreOpenHealth(ctx, path)
+	}
+	if err := sqliteStoreHealth(ctx, path); err != nil {
+		return err
+	}
+	return markSQLiteStoreHealthVerified(path, statePath)
+}
+
+func markSQLiteStoreHealthVerified(path, statePath string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	state := readPortableStoreRefreshState(statePath)
+	state.MirrorHealthSize = info.Size()
+	state.MirrorHealthModTime = info.ModTime().UTC().Format(time.RFC3339Nano)
+	return writePortableStoreRefreshState(statePath, state)
+}
+
+func sqliteStoreHealth(ctx context.Context, path string) error {
+	st, err := store.OpenReadOnly(ctx, path)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	rows, err := st.DB().QueryContext(ctx, `pragma quick_check`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var problems []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			return err
+		}
+		if strings.TrimSpace(line) != "ok" {
+			problems = append(problems, line)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("sqlite quick_check failed: %s", strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+func isSQLiteCorruption(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "database disk image is malformed") ||
+		strings.Contains(message, "file is not a database") ||
+		strings.Contains(message, "sqlite quick_check failed") ||
+		strings.Contains(message, "sqlite_corrupt") ||
+		strings.Contains(message, "error code 11") ||
+		strings.Contains(message, "(11)")
+}
+
+func preserveMalformedPortableDB(root, dbPath string) error {
+	timestamp := time.Now().UTC().Format("20060102T150405Z")
+	backupDir := filepath.Join(filepath.Dir(root), "backups", "malformed-"+timestamp)
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		return fmt.Errorf("create malformed db backup: %w", err)
+	}
+	for _, path := range []string{
+		dbPath,
+		dbPath + "-wal",
+		dbPath + "-shm",
+		dbPath + ".manifest.json",
+	} {
+		if _, err := os.Stat(path); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		target := filepath.Join(backupDir, filepath.Base(path)+".malformed")
+		if strings.HasSuffix(path, ".manifest.json") {
+			target = filepath.Join(backupDir, filepath.Base(path))
+		}
+		if err := copyFileAtomic(path, target); err != nil {
+			return fmt.Errorf("preserve malformed db evidence: %w", err)
+		}
+	}
+	return nil
+}
+
 func recentPortableRefresh(value string, now time.Time, maxAge time.Duration) bool {
 	if strings.TrimSpace(value) == "" {
 		return false
@@ -322,6 +503,23 @@ func portableStoreRoot(dbPath string) (string, bool) {
 		}
 		dir = parent
 	}
+}
+
+func portableStoreIsGitWorktree(ctx context.Context, dir string) bool {
+	out, err := gitOutput(ctx, "", "-C", dir, "rev-parse", "--is-inside-work-tree")
+	return err == nil && strings.TrimSpace(out) == "true"
+}
+
+func portableStoreRepairAllowed(root, configPath string) bool {
+	if strings.TrimSpace(root) == "" {
+		return false
+	}
+	if info, err := os.Stat(filepath.Join(root, ".git", "info", portableStoreMarkerFile)); err == nil && !info.IsDir() {
+		return true
+	}
+	defaultStoresDir := filepath.Join(filepath.Dir(config.ResolvePath(configPath)), "stores")
+	rel, err := filepath.Rel(defaultStoresDir, root)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel)
 }
 
 func gitWorktreeClean(ctx context.Context, dir string) bool {

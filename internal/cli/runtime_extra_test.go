@@ -93,4 +93,36 @@ func TestPortableRuntimeUtilityBranches(t *testing.T) {
 	if err := refreshPortableStoreForDB(context.Background(), source); err != nil {
 		t.Fatalf("non-portable refresh should be no-op: %v", err)
 	}
+	configDir := filepath.Join(dir, "config-root")
+	t.Setenv("GITCRAWL_CONFIG", filepath.Join(configDir, "config.toml"))
+	defaultStore := filepath.Join(configDir, "stores", "gitcrawl-store")
+	if err := os.MkdirAll(defaultStore, 0o755); err != nil {
+		t.Fatalf("mkdir default store: %v", err)
+	}
+	if !portableStoreRepairAllowed(defaultStore, "") {
+		t.Fatal("default portable store should be repairable")
+	}
+	if portableStoreRepairAllowed(configDir, "") {
+		t.Fatal("config root should not be repairable without marker")
+	}
+	markedStore := filepath.Join(dir, "custom-store")
+	markedInfo := filepath.Join(markedStore, ".git", "info")
+	if err := os.MkdirAll(markedInfo, 0o755); err != nil {
+		t.Fatalf("mkdir marked store info: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(markedInfo, portableStoreMarkerFile), []byte("gitcrawl portable store\n"), 0o644); err != nil {
+		t.Fatalf("write marked store marker: %v", err)
+	}
+	if !portableStoreRepairAllowed(markedStore, "") {
+		t.Fatal("marked portable store should be repairable")
+	}
+	explicitConfigDir := filepath.Join(dir, "explicit-config-root")
+	explicitConfigPath := filepath.Join(explicitConfigDir, "nested", "config.toml")
+	explicitStore := filepath.Join(explicitConfigDir, "nested", "stores", "gitcrawl-store")
+	if err := os.MkdirAll(explicitStore, 0o755); err != nil {
+		t.Fatalf("mkdir explicit default store: %v", err)
+	}
+	if !portableStoreRepairAllowed(explicitStore, explicitConfigPath) {
+		t.Fatal("explicit-config default portable store should be repairable")
+	}
 }
