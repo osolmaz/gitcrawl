@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.5 - Unreleased
+## 0.4.0 - 2026-05-17
 
 - Harden portable-store publishing and reads with manifest integrity checks, temp-DB validation before runtime replacement, stale Git lock cleanup, reclone fallback, and richer `doctor` DB health output.
 - Repair malformed portable-store SQLite caches by preserving the bad DB, resetting/pulling the store checkout, and recopying a healthy runtime mirror before local reads continue.
