@@ -13,6 +13,7 @@
 - Keep comment and PR-detail sync writes atomic when GitHub hydration fails, avoiding partial cache rows without a run record.
 - Fail PR-detail syncs when GitHub review-thread hydration fails instead of recording a successful partial refresh.
 - Consume the shared `openclaw/crawlkit` vector and portable-mirror helpers from gitcrawl.
+- Route OpenAI embedding requests through the shared `openclaw/crawlkit/embed` provider while preserving gitcrawl retry and error handling.
 - Fetch all paginated GitHub review-thread comments instead of keeping only the first review-thread comment page.
 - Keep `gh xcache gc` from expiring stable PR diff cache entries with the short fallback TTL while the PR head SHA is unchanged.
 - Fall back or fail for unsupported local `gh pr checks` and `gh run` JSON fields instead of silently omitting them.

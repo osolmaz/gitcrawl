@@ -1,12 +1,15 @@
 package openai
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	crawlembed "github.com/openclaw/crawlkit/embed"
 )
 
 type APIError struct {
@@ -58,6 +61,25 @@ func AsAPIError(err error) *APIError {
 		return apiErr
 	}
 	return nil
+}
+
+func apiErrorFromEmbed(err error, now time.Time) *APIError {
+	var httpErr *crawlembed.HTTPError
+	if !errors.As(err, &httpErr) {
+		return nil
+	}
+	apiErr := &APIError{
+		Status:     httpErr.StatusCode,
+		Message:    strings.TrimSpace(httpErr.Body),
+		RetryAfter: parseRetryAfter(httpErr.Header.Get("Retry-After"), now),
+	}
+	var parsed embeddingResponse
+	if jerr := json.Unmarshal([]byte(httpErr.Body), &parsed); jerr == nil && parsed.Error != nil {
+		apiErr.Message = parsed.Error.Message
+		apiErr.Type = parsed.Error.Type
+		apiErr.Code = parsed.Error.Code
+	}
+	return apiErr
 }
 
 func parseRetryAfter(header string, now time.Time) time.Duration {

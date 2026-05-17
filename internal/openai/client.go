@@ -1,24 +1,22 @@
 package openai
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	crawlembed "github.com/openclaw/crawlkit/embed"
 )
 
 const (
-	defaultBaseURL            = "https://api.openai.com/v1"
-	maxEmbeddingResponseBytes = 64 << 20
-	maxEmbeddingInputRunes    = 6_000
-	maxEmbeddingInputBytes    = 7_000
+	defaultBaseURL         = "https://api.openai.com/v1"
+	maxEmbeddingInputRunes = 6_000
+	maxEmbeddingInputBytes = 7_000
 )
 
 type RetryConfig struct {
@@ -204,67 +202,38 @@ func (c *Client) Embed(ctx context.Context, model string, texts []string) ([][]f
 }
 
 func (c *Client) embedOnce(ctx context.Context, model string, texts []string) ([][]float64, *APIError, error) {
-	payload, err := json.Marshal(embeddingRequest{Model: model, Input: texts, Dimensions: c.dimensions})
-	if err != nil {
-		return nil, nil, fmt.Errorf("marshal embeddings request: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/embeddings", bytes.NewReader(payload))
+	provider, err := crawlembed.NewProvider(crawlembed.Config{
+		Provider:   crawlembed.ProviderOpenAI,
+		Model:      model,
+		BaseURL:    c.baseURL,
+		Dimensions: c.dimensions,
+		UserAgent:  "gitcrawl",
+	}, crawlembed.WithHTTPClient(c.httpClient), crawlembed.WithAPIKey(c.apiKey))
 	if err != nil {
 		return nil, nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "gitcrawl")
 
-	resp, err := c.httpClient.Do(req)
+	batch, err := provider.Embed(ctx, texts)
 	if err != nil {
-		return nil, nil, fmt.Errorf("openai embeddings request: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxEmbeddingResponseBytes))
-	if err != nil {
-		return nil, nil, fmt.Errorf("read embeddings response: %w", err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		apiErr := &APIError{Status: resp.StatusCode}
-		var parsed embeddingResponse
-		if jerr := json.Unmarshal(body, &parsed); jerr == nil && parsed.Error != nil {
-			apiErr.Message = parsed.Error.Message
-			apiErr.Type = parsed.Error.Type
-			apiErr.Code = parsed.Error.Code
-		} else {
-			apiErr.Message = strings.TrimSpace(string(body))
+		if apiErr := apiErrorFromEmbed(err, c.now()); apiErr != nil {
+			return nil, apiErr, nil
 		}
-		apiErr.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), c.now())
-		return nil, apiErr, nil
+		return nil, nil, err
 	}
-
-	var parsed embeddingResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, nil, fmt.Errorf("decode embeddings response: %w", err)
-	}
-	if len(parsed.Data) != len(texts) {
-		return nil, nil, fmt.Errorf("openai embeddings returned %d vectors for %d inputs", len(parsed.Data), len(texts))
-	}
-	out := make([][]float64, len(texts))
-	seen := make([]bool, len(texts))
-	for _, item := range parsed.Data {
-		if item.Index < 0 || item.Index >= len(texts) {
-			return nil, nil, fmt.Errorf("openai embeddings returned invalid index %d", item.Index)
-		}
-		if seen[item.Index] {
-			return nil, nil, fmt.Errorf("openai embeddings returned duplicate index %d", item.Index)
-		}
-		seen[item.Index] = true
-		out[item.Index] = item.Embedding
-	}
-	for index, vector := range out {
-		if len(vector) == 0 {
-			return nil, nil, fmt.Errorf("openai embeddings returned empty vector at index %d", index)
+	vectors := batch.Vectors64
+	if vectors == nil {
+		vectors = make([][]float64, len(batch.Vectors))
+		for i, vector := range batch.Vectors {
+			vectors[i] = make([]float64, len(vector))
+			for j, value := range vector {
+				vectors[i][j] = float64(value)
+			}
 		}
 	}
-	return out, nil, nil
+	if len(vectors) != len(texts) {
+		return nil, nil, fmt.Errorf("openai embeddings returned %d vectors for %d inputs", len(vectors), len(texts))
+	}
+	return vectors, nil, nil
 }
 
 func (c *Client) backoff(attempt int, base time.Duration, retryAfter time.Duration) time.Duration {
