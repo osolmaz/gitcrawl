@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.4.1 - Unreleased
+
 ## 0.4.0 - 2026-05-17
 
 - Harden portable-store publishing and reads with manifest integrity checks, temp-DB validation before runtime replacement, stale Git lock cleanup, reclone fallback, and richer `doctor` DB health output.
