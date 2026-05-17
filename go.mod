@@ -9,10 +9,11 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/mattn/go-isatty v0.0.22
-	github.com/vincentkoc/crawlkit v0.4.1
+	github.com/openclaw/crawlkit v0.5.2
 )
 
 require (
+	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect

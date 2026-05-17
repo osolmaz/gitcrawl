@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/alecthomas/kong"
+	"github.com/openclaw/crawlkit/control"
+	"github.com/openclaw/crawlkit/mirror"
 	clusterer "github.com/openclaw/gitcrawl/internal/cluster"
 	"github.com/openclaw/gitcrawl/internal/config"
 	gh "github.com/openclaw/gitcrawl/internal/github"
@@ -27,7 +29,6 @@ import (
 	"github.com/openclaw/gitcrawl/internal/store"
 	"github.com/openclaw/gitcrawl/internal/syncer"
 	"github.com/openclaw/gitcrawl/internal/vector"
-	"github.com/vincentkoc/crawlkit/control"
 )
 
 const (
@@ -2556,23 +2557,11 @@ func gitRemoteForMessage(value string) string {
 }
 
 func removePortableSQLiteSidecars(dir string) error {
-	return filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if entry.Name() == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(path, ".db-wal") || strings.HasSuffix(path, ".db-shm") {
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("remove portable sqlite sidecar %s: %w", path, err)
-			}
-		}
+	_, err := mirror.CleanSQLiteSidecars(dir)
+	if errors.Is(err, os.ErrNotExist) {
 		return nil
-	})
+	}
+	return err
 }
 
 func isDirtyPortablePullError(err error) bool {

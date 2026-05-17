@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openclaw/crawlkit/progress"
 	"github.com/openclaw/gitcrawl/internal/documents"
 	gh "github.com/openclaw/gitcrawl/internal/github"
 	"github.com/openclaw/gitcrawl/internal/store"
-	"github.com/vincentkoc/crawlkit/progress"
 )
 
 type GitHubClient interface {

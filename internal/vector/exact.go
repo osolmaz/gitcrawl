@@ -2,7 +2,8 @@ package vector
 
 import (
 	"math"
-	"sort"
+
+	crawlvector "github.com/openclaw/crawlkit/vector"
 )
 
 type Item struct {
@@ -19,7 +20,7 @@ func Query(items []Item, query []float64, limit int, excludeThreadID int64) []Ne
 	if limit <= 0 {
 		limit = 20
 	}
-	out := make([]Neighbor, 0, len(items))
+	scored := make([]crawlvector.Scored[Neighbor], 0, len(items))
 	for _, item := range items {
 		if item.ThreadID == excludeThreadID {
 			continue
@@ -28,16 +29,15 @@ func Query(items []Item, query []float64, limit int, excludeThreadID int64) []Ne
 		if math.IsNaN(score) || math.IsInf(score, 0) || score <= 0 {
 			continue
 		}
-		out = append(out, Neighbor{ThreadID: item.ThreadID, Score: score})
+		neighbor := Neighbor{ThreadID: item.ThreadID, Score: score}
+		scored = append(scored, crawlvector.Scored[Neighbor]{Item: neighbor, Score: score})
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Score == out[j].Score {
-			return out[i].ThreadID < out[j].ThreadID
-		}
-		return out[i].Score > out[j].Score
+	top := crawlvector.TopK(scored, limit, func(left, right Neighbor) bool {
+		return left.ThreadID < right.ThreadID
 	})
-	if len(out) > limit {
-		out = out[:limit]
+	out := make([]Neighbor, len(top))
+	for i, item := range top {
+		out[i] = item.Item
 	}
 	return out
 }

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	crawlconfig "github.com/vincentkoc/crawlkit/config"
+	crawlconfig "github.com/openclaw/crawlkit/config"
 )
 
 func TestSaveLoadRoundTrip(t *testing.T) {

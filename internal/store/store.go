@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	crawlstore "github.com/openclaw/crawlkit/store"
 	"github.com/openclaw/gitcrawl/internal/store/storedb"
-	crawlstore "github.com/vincentkoc/crawlkit/store"
 )
 
 const (
