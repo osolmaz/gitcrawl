@@ -125,10 +125,13 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		a.printUsage()
 		return nil
 	}
+	a.maybeNotifyRelease(ctx, rest)
 
 	switch rest[0] {
 	case "version":
 		return a.writeOutput("version", map[string]string{"version": version}, false)
+	case "check-update":
+		return a.runCheckUpdate(ctx, rest[1:])
 	case "metadata":
 		return a.runMetadata(rest[1:])
 	case "serve":
@@ -2843,6 +2846,7 @@ func (a *App) runMetadata(args []string) error {
 	manifest.Privacy = control.Privacy{ContainsPrivateMessages: false, ExportsSecrets: false, LocalOnlyScopes: []string{"github", "sqlite", "portable"}}
 	manifest.Commands = map[string]control.Command{
 		"status":          {Title: "Status", Argv: []string{"gitcrawl", "status", "--json"}, JSON: true},
+		"check-update":    {Title: "Check for updates", Argv: []string{"gitcrawl", "check-update", "--json"}, JSON: true},
 		"doctor":          {Title: "Doctor", Argv: []string{"gitcrawl", "doctor", "--json"}, JSON: true},
 		"sync":            {Title: "Sync repository", Argv: []string{"gitcrawl", "sync", "--json"}, JSON: true, Mutates: true},
 		"search":          {Title: "Search", Argv: []string{"gitcrawl", "search", "--json"}, JSON: true},
@@ -3588,6 +3592,7 @@ Global flags:
 
 Core commands:
   metadata             print crawlkit control metadata
+  check-update         check for a newer gitcrawl release
   status               print fast read-only archive status
   init                 create config, optionally from a portable store
   doctor               check config, token, and database readiness
@@ -3629,6 +3634,11 @@ Usage:
 
 Usage:
   gitcrawl status [--json]
+`,
+	"check-update": `gitcrawl check-update checks GitHub Releases for a newer gitcrawl build.
+
+Usage:
+  gitcrawl check-update [--json] [--force]
 `,
 	"init": `gitcrawl init creates a local config and SQLite database.
 

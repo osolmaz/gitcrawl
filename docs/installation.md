@@ -45,6 +45,18 @@ gitcrawl --version
 
 Browse the [releases page](https://github.com/openclaw/gitcrawl/releases) for the latest tag and the full asset list. Use a directory that is already on your `PATH`; `~/bin` and `~/.local/bin` avoid needing elevated permissions.
 
+## Check for updates
+
+```bash
+gitcrawl check-update
+gitcrawl check-update --json
+```
+
+Interactive terminal runs perform a cached daily release check and print a
+stderr notice when a newer OpenClaw release is available. Scripted, JSON, CI,
+and non-TTY runs skip the passive notice. Set `GITCRAWL_NO_UPDATE_CHECK=1` or
+`CRAWLKIT_NO_UPDATE_CHECK=1` to disable it.
+
 ## Install from source
 
 ```bash
