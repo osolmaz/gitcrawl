@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.2 - Unreleased
+## 0.4.3 - 2026-05-22
 
 - Update `crawlkit` to v0.7.0.
 - Retry transient SQLite busy/locked cache writes during sync and keep gh-shim auto-hydration quiet so live fallback reads do not surface scary local cache lock noise.
