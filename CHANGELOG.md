@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.4.5 - Unreleased
+
 ## 0.4.4 - 2026-05-23
 
 - Keep the highlighted member selected in the TUI when the cluster list auto-refreshes, is manually refreshed, or is re-sorted/filtered, instead of silently snapping the selection back to the first row.
