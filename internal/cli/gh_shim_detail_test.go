@@ -216,6 +216,51 @@ func TestParseLocalGHAPIArgsDeclinesBehaviorChangingFlags(t *testing.T) {
 	}
 }
 
+func TestParseLocalGHAPIArgsAcceptedForms(t *testing.T) {
+	route, jqExpr, ok := parseLocalGHAPIArgs([]string{"api", "--method", "GET", "--cache", "1h", "repos/openclaw/openclaw/pulls/12", "--jq=.number"})
+	if !ok || route != "repos/openclaw/openclaw/pulls/12" || jqExpr != ".number" {
+		t.Fatalf("parseLocalGHAPIArgs long flags = %q %q %v", route, jqExpr, ok)
+	}
+	route, jqExpr, ok = parseLocalGHAPIArgs([]string{"api", "--method=GET", "--cache=1h", "repos/openclaw/openclaw/pulls/12?foo=bar", "-q", ".title"})
+	if !ok || route != "repos/openclaw/openclaw/pulls/12?foo=bar" || jqExpr != ".title" {
+		t.Fatalf("parseLocalGHAPIArgs equals flags = %q %q %v", route, jqExpr, ok)
+	}
+	if _, _, ok := parseLocalGHAPIArgs([]string{"api", "--method", "POST", "repos/openclaw/openclaw/pulls/12"}); ok {
+		t.Fatal("POST should not be locally handled")
+	}
+}
+
+func TestParsePullAPIRouteAndRESTPullID(t *testing.T) {
+	owner, repo, number, ok := parsePullAPIRoute("/repos/openclaw/gitcrawl/pulls/42?ignored=true")
+	if !ok || owner != "openclaw" || repo != "gitcrawl" || number != 42 {
+		t.Fatalf("parsePullAPIRoute = %q %q %d %v", owner, repo, number, ok)
+	}
+	for _, route := range []string{"repos/openclaw/gitcrawl/issues/42", "repos/openclaw/gitcrawl/pulls/nope", "repos/openclaw//pulls/42"} {
+		if _, _, _, ok := parsePullAPIRoute(route); ok {
+			t.Fatalf("parsePullAPIRoute(%q) ok, want false", route)
+		}
+	}
+	for _, tc := range []struct {
+		raw      any
+		fallback string
+		want     any
+		ok       bool
+	}{
+		{float64(12), "", float64(12), true},
+		{int(13), "", int(13), true},
+		{int64(14), "", int64(14), true},
+		{"15", "", int64(15), true},
+		{"node-id", "", "node-id", true},
+		{nil, "16", int64(16), true},
+		{nil, "", nil, false},
+	} {
+		got, ok := restPullID(tc.raw, tc.fallback)
+		if ok != tc.ok || got != tc.want {
+			t.Fatalf("restPullID(%#v,%q) = %#v %v, want %#v %v", tc.raw, tc.fallback, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
 func TestGHPRMergedFieldsUseRawPullDetail(t *testing.T) {
 	cache := store.PullRequestCache{
 		Detail: store.PullRequestDetail{RawJSON: `{"merged":true,"merged_at":"2026-04-27T03:00:00Z","merge_commit_sha":"final123","auto_merge":{"enabled_by":{"login":"alice"},"merge_method":"SQUASH","commit_title":"ship it","commit_message":"details"}}`},
