@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.4.6 - Unreleased
+
 ## 0.4.5 - 2026-05-23
 
 - Improve gh-shim cache hit rates for API projections, explicit `--cache` reads, broad run-list fallbacks, stable dated searches, `pr checks --watch=false`, common local PR view fields, enriched `pr list --json` fields, and cached pull-request API reads.
