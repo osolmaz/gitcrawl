@@ -171,7 +171,7 @@ func TestGHShimViewAndListUseLocalCache(t *testing.T) {
 	}
 
 	stdout.Reset()
-	if err := run.Run(ctx, []string{"--config", configPath, "gh", "pr", "list", "-R", "openclaw/openclaw", "--json", "number,headRefName,baseRefName,mergeStateStatus,statusCheckRollup,headRefOid,headRepositoryOwner,maintainerCanModify,reviewDecision"}); err != nil {
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "--cached", "pr", "list", "-R", "openclaw/openclaw", "--json", "number,headRefName,baseRefName,mergeStateStatus,statusCheckRollup,headRefOid,headRepositoryOwner,maintainerCanModify,reviewDecision"}); err != nil {
 		t.Fatalf("gh pr enriched list: %v", err)
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &list); err != nil {
