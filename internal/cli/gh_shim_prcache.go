@@ -11,13 +11,14 @@ import (
 	"github.com/openclaw/gitcrawl/internal/store"
 )
 
-func (a *App) ghThreadViewJSONRow(ctx context.Context, repoValue string, thread store.Thread, fieldsRaw string) (map[string]any, error) {
+func (a *App) ghThreadViewJSONRow(ctx context.Context, repoValue string, thread store.Thread, fieldsRaw string, controls ghShimControls) (map[string]any, error) {
 	fields := parseJSONFields(fieldsRaw)
 	if len(fields) == 0 {
 		return nil, fmt.Errorf("--json requires at least one field")
 	}
 	row := make(map[string]any, len(fields))
 	var cache *store.PullRequestCache
+	reviewHydrated := false
 	for _, field := range fields {
 		if field == "comments" {
 			comments, err := a.localGHThreadComments(ctx, thread.ID)
@@ -31,8 +32,25 @@ func (a *App) ghThreadViewJSONRow(ctx context.Context, repoValue string, thread 
 			if thread.Kind != "pull_request" {
 				return nil, fmt.Errorf("unsupported --json field %q", field)
 			}
+			if !reviewHydrated && !controls.Cached {
+				if err := a.hydrateGHPRViewReviews(ctx, repoValue, thread.Number); err != nil {
+					return nil, err
+				}
+				loaded, loadErr := a.localGHPullRequestCache(ctx, repoValue, thread.Number)
+				if loadErr != nil {
+					return nil, loadErr
+				}
+				cache = &loaded
+				reviewHydrated = true
+			}
 			if cache == nil {
-				loaded, loadErr := a.loadGHPullRequestCache(ctx, repoValue, thread.Number, ghPRFieldsNeedFresh(fields))
+				var loaded store.PullRequestCache
+				var loadErr error
+				if controls.Cached {
+					loaded, loadErr = a.localGHPullRequestCache(ctx, repoValue, thread.Number)
+				} else {
+					loaded, loadErr = a.loadGHPullRequestCache(ctx, repoValue, thread.Number, ghPRFieldsNeedFresh(fields))
+				}
 				if loadErr != nil {
 					return nil, loadErr
 				}
@@ -58,7 +76,13 @@ func (a *App) ghThreadViewJSONRow(ctx context.Context, repoValue string, thread 
 			return nil, err
 		}
 		if cache == nil {
-			loaded, loadErr := a.loadGHPullRequestCache(ctx, repoValue, thread.Number, ghPRFieldsNeedFresh(fields))
+			var loaded store.PullRequestCache
+			var loadErr error
+			if controls.Cached {
+				loaded, loadErr = a.localGHPullRequestCache(ctx, repoValue, thread.Number)
+			} else {
+				loaded, loadErr = a.loadGHPullRequestCache(ctx, repoValue, thread.Number, ghPRFieldsNeedFresh(fields))
+			}
 			if loadErr != nil {
 				return nil, loadErr
 			}
@@ -71,6 +95,25 @@ func (a *App) ghThreadViewJSONRow(ctx context.Context, repoValue string, thread 
 		row[field] = value
 	}
 	return row, nil
+}
+
+func (a *App) hydrateGHPRViewReviews(ctx context.Context, repoValue string, number int) error {
+	if !a.shouldAutoHydrateGHThread(nil) {
+		return localGHUnsupported(fmt.Errorf("fresh PR reviews require live hydration"))
+	}
+	owner, repoName, err := parseOwnerRepo(repoValue)
+	if err != nil {
+		return localGHUnsupported(err)
+	}
+	if _, err := a.syncRepository(ctx, owner, repoName, syncOptions{
+		Numbers:          []int{number},
+		IncludeComments:  true,
+		IncludePRDetails: true,
+		Quiet:            true,
+	}); err != nil {
+		return localGHUnsupported(err)
+	}
+	return nil
 }
 
 func cacheHeadSHA(cache *store.PullRequestCache) string {

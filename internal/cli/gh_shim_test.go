@@ -55,8 +55,9 @@ func TestGHShimFallsBackForUnsupportedRead(t *testing.T) {
 		t.Fatalf("write fake gh: %v", err)
 	}
 	t.Setenv("GITCRAWL_GH_PATH", ghPath)
+	t.Setenv("GITCRAWL_GH_AUTO_HYDRATE", "0")
 
-	for _, fields := range []string{"unsupportedField", "closingIssuesReferences", "autoMergeRequest", "isInMergeQueue"} {
+	for _, fields := range []string{"unsupportedField", "closingIssuesReferences", "autoMergeRequest", "isInMergeQueue", "reviewDecision", "reviews", "latestReviews"} {
 		run := New()
 		var stdout bytes.Buffer
 		run.Stdout = &stdout

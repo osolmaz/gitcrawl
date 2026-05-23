@@ -66,7 +66,7 @@ func (a *App) runGHShim(ctx context.Context, args []string) error {
 		if len(args) >= 2 {
 			switch args[1] {
 			case "view":
-				if err := a.runGHThreadView(ctx, args[0], args[2:]); err != nil {
+				if err := a.runGHThreadView(ctx, args[0], args[2:], controls); err != nil {
 					if isLocalGHUnsupported(err) {
 						if controls.Cached {
 							return err
@@ -151,7 +151,7 @@ func (a *App) runGHShim(ctx context.Context, args []string) error {
 	return a.execRealGHMaybeCached(ctx, args, controls)
 }
 
-func (a *App) runGHThreadView(ctx context.Context, resource string, args []string) error {
+func (a *App) runGHThreadView(ctx context.Context, resource string, args []string, controls ghShimControls) error {
 	fs := flag.NewFlagSet(resource+" view", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	repoShort := fs.String("R", "", "repository")
@@ -179,7 +179,7 @@ func (a *App) runGHThreadView(ctx context.Context, resource string, args []strin
 	}
 	thread, err := a.localGHThread(ctx, repoValue, ghResourceKind(resource), number)
 	if err != nil {
-		if a.shouldAutoHydrateGHThread(err) {
+		if !controls.Cached && a.shouldAutoHydrateGHThread(err) {
 			owner, repoName, parseErr := parseOwnerRepo(repoValue)
 			if parseErr != nil {
 				return localGHUnsupported(parseErr)
@@ -205,7 +205,7 @@ func (a *App) runGHThreadView(ctx context.Context, resource string, args []strin
 		if jsonFields == "" {
 			jsonFields = "number,title,state,url"
 		}
-		row, err := a.ghThreadViewJSONRow(ctx, repoValue, thread, jsonFields)
+		row, err := a.ghThreadViewJSONRow(ctx, repoValue, thread, jsonFields, controls)
 		if err != nil {
 			return localGHUnsupported(err)
 		}

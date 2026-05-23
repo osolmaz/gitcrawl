@@ -23,7 +23,7 @@ func TestGHShimViewAndListUseLocalCache(t *testing.T) {
 	run := New()
 	var stdout bytes.Buffer
 	run.Stdout = &stdout
-	if err := run.Run(ctx, []string{"--config", configPath, "gh", "pr", "view", "12", "-R", "openclaw/openclaw", "--json", "number,title,isDraft,author,comments,assignees,baseRefName,maintainerCanModify,mergeCommit,reviewDecision,reviews,latestReviews"}); err != nil {
+	if err := run.Run(ctx, []string{"--config", configPath, "gh", "pr", "view", "12", "-R", "openclaw/openclaw", "--json", "number,title,isDraft,author,comments,assignees,baseRefName,maintainerCanModify,mergeCommit"}); err != nil {
 		t.Fatalf("gh pr view: %v", err)
 	}
 	var view map[string]any
@@ -180,6 +180,27 @@ func TestGHReviewDecisionIgnoresStaleReviews(t *testing.T) {
 	})
 	if decision != "APPROVED" {
 		t.Fatalf("decision = %#v, want APPROVED", decision)
+	}
+}
+
+func TestGHCachedReviewFieldsUseLocalRowsOnly(t *testing.T) {
+	ctx := context.Background()
+	configPath := seedGHShimRepo(t, ctx)
+	app := New()
+	app.configPath = configPath
+	thread, err := app.localGHThread(ctx, "openclaw/openclaw", "pull_request", 12)
+	if err != nil {
+		t.Fatalf("local thread: %v", err)
+	}
+	row, err := app.ghThreadViewJSONRow(ctx, "openclaw/openclaw", thread, "reviewDecision,reviews", ghShimControls{Cached: true})
+	if err != nil {
+		t.Fatalf("cached review row: %v", err)
+	}
+	if row["reviewDecision"] != nil {
+		t.Fatalf("reviewDecision = %#v, want nil", row["reviewDecision"])
+	}
+	if got := len(row["reviews"].([]map[string]any)); got != 0 {
+		t.Fatalf("reviews len = %d, want 0", got)
 	}
 }
 
