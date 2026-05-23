@@ -4018,6 +4018,360 @@ func seedTUIClusterPair(ctx context.Context, st *store.Store, repoID, clusterID 
 	return firstID, secondID, nil
 }
 
+// TestTUILoadSelectedClusterPreservesMemberSelection guards the regression
+// where every reload path (auto-refresh, manual refresh, sort/filter toggles)
+// snapped the member selection back to the first row, because
+// loadSelectedCluster wiped memberRows/memberIndex before sortMembers could
+// capture the prior selection.
+func TestTUILoadSelectedClusterPreservesMemberSelection(t *testing.T) {
+	cluster := store.ClusterSummary{
+		ID: 1, Source: store.ClusterSourceRun, Status: "active",
+		MemberCount: 4, UpdatedAt: "2026-04-27T00:00:00Z",
+	}
+	detail := store.ClusterDetail{
+		Cluster: cluster,
+		Members: []store.ClusterMemberDetail{
+			{Thread: store.Thread{ID: 101, Number: 101, Kind: "issue", State: "open", Title: "alpha"}},
+			{Thread: store.Thread{ID: 102, Number: 102, Kind: "issue", State: "open", Title: "bravo"}},
+			{Thread: store.Thread{ID: 103, Number: 103, Kind: "issue", State: "open", Title: "charlie"}},
+			{Thread: store.Thread{ID: 104, Number: 104, Kind: "issue", State: "open", Title: "delta"}},
+		},
+	}
+	model := newClusterBrowserModel(context.Background(), nil, 0, clusterBrowserPayload{
+		Repository: "openclaw/openclaw",
+		Sort:       "recent",
+		Clusters:   []store.ClusterSummary{cluster},
+	})
+	model.detailCache[clusterSummaryKey(cluster)] = detail
+
+	model.loadSelectedCluster()
+
+	// Select a member that is not the first selectable row.
+	var wantThreadID int64
+	seenSelectable := 0
+	for i, row := range model.memberRows {
+		if !row.selectable {
+			continue
+		}
+		seenSelectable++
+		if seenSelectable == 2 {
+			model.memberIndex = i
+			wantThreadID = row.member.Thread.ID
+			break
+		}
+	}
+	if wantThreadID == 0 {
+		t.Fatalf("could not pick a non-first member; memberRows=%d", len(model.memberRows))
+	}
+	model.detailView.YOffset = 4
+
+	// Simulate an auto-refresh reload of the same cluster.
+	model.loadSelectedCluster()
+
+	got, ok := model.selectedMember()
+	if !ok {
+		t.Fatalf("no member selected after reload")
+	}
+	if got.Thread.ID != wantThreadID {
+		t.Fatalf("member selection not preserved across reload: got thread %d, want %d", got.Thread.ID, wantThreadID)
+	}
+	if model.detailView.YOffset != 4 {
+		t.Fatalf("detail offset after preserved reload = %d, want 4", model.detailView.YOffset)
+	}
+}
+
+func TestTUISortPreservesSelectedClusterAndMember(t *testing.T) {
+	first := store.ClusterSummary{ID: 1, Source: store.ClusterSourceRun, Status: "active", MemberCount: 1, UpdatedAt: "2026-04-27T00:00:00Z"}
+	second := store.ClusterSummary{ID: 2, Source: store.ClusterSourceRun, Status: "active", MemberCount: 10, UpdatedAt: "2026-04-27T00:00:00Z"}
+	firstDetail := store.ClusterDetail{
+		Cluster: first,
+		Members: []store.ClusterMemberDetail{
+			{Thread: store.Thread{ID: 101, Number: 101, Kind: "issue", State: "open", Title: "alpha"}},
+			{Thread: store.Thread{ID: 102, Number: 102, Kind: "issue", State: "open", Title: "bravo"}},
+		},
+	}
+	secondDetail := store.ClusterDetail{
+		Cluster: second,
+		Members: []store.ClusterMemberDetail{
+			{Thread: store.Thread{ID: 201, Number: 201, Kind: "issue", State: "open", Title: "charlie"}},
+		},
+	}
+	model := newClusterBrowserModel(context.Background(), nil, 0, clusterBrowserPayload{
+		Repository: "openclaw/openclaw",
+		Sort:       "recent",
+		Clusters:   []store.ClusterSummary{first, second},
+	})
+	model.detailCache[clusterSummaryKey(first)] = firstDetail
+	model.detailCache[clusterSummaryKey(second)] = secondDetail
+	model.loadSelectedCluster()
+	model.memberIndex = memberRowIndex(model.memberRows, 102)
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	model = next.(clusterBrowserModel)
+
+	if model.payload.Sort != "size" {
+		t.Fatalf("sort = %q, want size", model.payload.Sort)
+	}
+	if model.payload.Clusters[model.selected].ID != first.ID {
+		t.Fatalf("selected cluster after sort = %d, want %d", model.payload.Clusters[model.selected].ID, first.ID)
+	}
+	got, ok := model.selectedMember()
+	if !ok {
+		t.Fatal("no member selected after sort")
+	}
+	if got.Thread.ID != 102 {
+		t.Fatalf("selected member after sort = %d, want 102", got.Thread.ID)
+	}
+}
+
+func TestTUIMenuSortPreservesSelectedClusterAndMember(t *testing.T) {
+	first := store.ClusterSummary{ID: 1, Source: store.ClusterSourceRun, Status: "active", MemberCount: 1, UpdatedAt: "2026-04-27T00:00:00Z"}
+	second := store.ClusterSummary{ID: 2, Source: store.ClusterSourceRun, Status: "active", MemberCount: 10, UpdatedAt: "2026-04-27T00:00:00Z"}
+	model := newClusterBrowserModel(context.Background(), nil, 0, clusterBrowserPayload{
+		Repository: "openclaw/openclaw",
+		Sort:       "recent",
+		Clusters:   []store.ClusterSummary{first, second},
+	})
+	model.detailCache[clusterSummaryKey(first)] = store.ClusterDetail{
+		Cluster: first,
+		Members: []store.ClusterMemberDetail{
+			{Thread: store.Thread{ID: 101, Number: 101, Kind: "issue", State: "open", Title: "alpha"}},
+			{Thread: store.Thread{ID: 102, Number: 102, Kind: "issue", State: "open", Title: "bravo"}},
+		},
+	}
+	model.detailCache[clusterSummaryKey(second)] = store.ClusterDetail{
+		Cluster: second,
+		Members: []store.ClusterMemberDetail{
+			{Thread: store.Thread{ID: 201, Number: 201, Kind: "issue", State: "open", Title: "charlie"}},
+		},
+	}
+	model.loadSelectedCluster()
+	model.memberIndex = memberRowIndex(model.memberRows, 102)
+	model.openActionMenu()
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	model = next.(clusterBrowserModel)
+
+	if model.payload.Clusters[model.selected].ID != first.ID {
+		t.Fatalf("selected cluster after menu sort = %d, want %d", model.payload.Clusters[model.selected].ID, first.ID)
+	}
+	got, ok := model.selectedMember()
+	if !ok {
+		t.Fatal("no member selected after menu sort")
+	}
+	if got.Thread.ID != 102 {
+		t.Fatalf("selected member after menu sort = %d, want 102", got.Thread.ID)
+	}
+}
+
+func TestTUILoadSelectedClusterDoesNotRestoreAcrossOverlappingClusters(t *testing.T) {
+	shared := store.Thread{ID: 301, Number: 301, Kind: "issue", State: "open", Title: "shared"}
+	first := store.ClusterSummary{ID: 1, Source: store.ClusterSourceRun, Status: "active", MemberCount: 1, UpdatedAt: "2026-04-27T00:00:00Z"}
+	second := store.ClusterSummary{ID: 2, Source: store.ClusterSourceRun, Status: "active", MemberCount: 2, UpdatedAt: "2026-04-27T00:00:00Z"}
+	model := newClusterBrowserModel(context.Background(), nil, 0, clusterBrowserPayload{
+		Repository: "openclaw/openclaw",
+		Sort:       "recent",
+		Clusters:   []store.ClusterSummary{first, second},
+	})
+	model.detailCache[clusterSummaryKey(first)] = store.ClusterDetail{
+		Cluster: first,
+		Members: []store.ClusterMemberDetail{{Thread: shared}},
+	}
+	model.detailCache[clusterSummaryKey(second)] = store.ClusterDetail{
+		Cluster: second,
+		Members: []store.ClusterMemberDetail{
+			{Thread: store.Thread{ID: 201, Number: 201, Kind: "issue", State: "open", Title: "other"}},
+			{Thread: shared},
+		},
+	}
+	model.loadSelectedCluster()
+	model.detailView.YOffset = 9
+
+	model.move(1)
+
+	got, ok := model.selectedMember()
+	if !ok {
+		t.Fatal("no member selected after cluster switch")
+	}
+	if got.Thread.ID != 201 {
+		t.Fatalf("overlapping cluster restored shared member %d, want 201", got.Thread.ID)
+	}
+	if model.detailView.YOffset != 0 {
+		t.Fatalf("detail offset after cluster switch = %d, want 0", model.detailView.YOffset)
+	}
+}
+
+func TestTUIApplyClusterRefreshDoesNotRestoreStaleWheelSelection(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	repoID, err := st.UpsertRepository(ctx, store.Repository{Owner: "openclaw", Name: "openclaw", FullName: "openclaw/openclaw", RawJSON: "{}", UpdatedAt: "2026-04-27T00:00:00Z"})
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+	sharedID, err := st.UpsertThread(ctx, store.Thread{RepoID: repoID, GitHubID: "301", Number: 301, Kind: "issue", State: "open", Title: "shared", HTMLURL: "https://github.com/openclaw/openclaw/issues/301", LabelsJSON: "[]", AssigneesJSON: "[]", RawJSON: "{}", ContentHash: "shared", UpdatedAt: "2026-04-27T00:00:00Z"})
+	if err != nil {
+		t.Fatalf("shared thread: %v", err)
+	}
+	otherID, err := st.UpsertThread(ctx, store.Thread{RepoID: repoID, GitHubID: "201", Number: 201, Kind: "issue", State: "open", Title: "other", HTMLURL: "https://github.com/openclaw/openclaw/issues/201", LabelsJSON: "[]", AssigneesJSON: "[]", RawJSON: "{}", ContentHash: "other", UpdatedAt: "2026-04-27T00:00:00Z"})
+	if err != nil {
+		t.Fatalf("other thread: %v", err)
+	}
+	for _, row := range []struct {
+		clusterID int64
+		threadID  int64
+		role      string
+		title     string
+	}{
+		{clusterID: 1, threadID: sharedID, role: "representative", title: "first"},
+		{clusterID: 2, threadID: otherID, role: "representative", title: "second"},
+		{clusterID: 2, threadID: sharedID, role: "member", title: "second"},
+	} {
+		if row.role == "representative" {
+			if _, err := st.DB().ExecContext(ctx, `
+				insert into cluster_groups(id, repo_id, stable_key, stable_slug, status, representative_thread_id, title, created_at, updated_at)
+				values(?, ?, ?, ?, 'active', ?, ?, '2026-04-27T00:00:00Z', '2026-04-27T00:00:00Z')
+			`, row.clusterID, repoID, fmt.Sprintf("cluster-%d", row.clusterID), row.title, row.threadID, row.title); err != nil {
+				t.Fatalf("cluster group %d: %v", row.clusterID, err)
+			}
+		}
+		if _, err := st.DB().ExecContext(ctx, `
+			insert into cluster_memberships(cluster_id, thread_id, role, state, added_by, added_reason_json, created_at, updated_at)
+			values(?, ?, ?, 'active', 'system', '{}', '2026-04-27T00:00:00Z', '2026-04-27T00:00:00Z')
+		`, row.clusterID, row.threadID, row.role); err != nil {
+			t.Fatalf("cluster membership %d/%d: %v", row.clusterID, row.threadID, err)
+		}
+	}
+	clusters, err := st.ListClusterSummaries(ctx, store.ClusterSummaryOptions{RepoID: repoID, IncludeClosed: false, MinSize: 1, Limit: 20, Sort: "recent"})
+	if err != nil {
+		t.Fatalf("clusters: %v", err)
+	}
+	first, second := clusters[0], clusters[1]
+	if first.ID != 1 {
+		first, second = second, first
+	}
+	model := newClusterBrowserModel(ctx, st, repoID, clusterBrowserPayload{
+		Repository: "openclaw/openclaw",
+		Sort:       "recent",
+		MinSize:    1,
+		Clusters:   []store.ClusterSummary{first, second},
+	})
+	model.loadSelectedCluster()
+	model.detailView.YOffset = 6
+	model.selected = 1
+
+	model.applyClusterRefresh([]store.ClusterSummary{second, first}, model.currentClusterKey())
+
+	got, ok := model.selectedMember()
+	if !ok {
+		t.Fatal("no member selected after refresh")
+	}
+	if got.Thread.Number != 201 {
+		t.Fatalf("stale wheel refresh selected #%d, want #201", got.Thread.Number)
+	}
+	if model.detailView.YOffset != 0 {
+		t.Fatalf("stale wheel refresh offset = %d, want 0", model.detailView.YOffset)
+	}
+}
+
+func TestTUIApplyClusterRefreshPreservesMemberSelectionAfterReorder(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	repoID, err := st.UpsertRepository(ctx, store.Repository{Owner: "openclaw", Name: "openclaw", FullName: "openclaw/openclaw", RawJSON: "{}", UpdatedAt: "2026-04-27T00:00:00Z"})
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+	if _, _, err := seedTUIClusterPair(ctx, st, repoID, 1, 101, 102); err != nil {
+		t.Fatalf("seed cluster 1: %v", err)
+	}
+	if _, _, err := seedTUIClusterPair(ctx, st, repoID, 2, 201, 202); err != nil {
+		t.Fatalf("seed cluster 2: %v", err)
+	}
+	clusters, err := st.ListClusterSummaries(ctx, store.ClusterSummaryOptions{RepoID: repoID, IncludeClosed: false, MinSize: 1, Limit: 20, Sort: "recent"})
+	if err != nil {
+		t.Fatalf("clusters: %v", err)
+	}
+	if len(clusters) != 2 {
+		t.Fatalf("clusters length = %d, want 2", len(clusters))
+	}
+	first, second := clusters[0], clusters[1]
+	if first.ID != 1 {
+		first, second = second, first
+	}
+
+	model := newClusterBrowserModel(ctx, st, repoID, clusterBrowserPayload{
+		Repository: "openclaw/openclaw",
+		Sort:       "recent",
+		MinSize:    1,
+		Clusters:   []store.ClusterSummary{first, second},
+	})
+	model.loadSelectedCluster()
+	model.memberIndex = memberRowIndex(model.memberRows, 102)
+	model.detailView.YOffset = 7
+	currentKey := model.currentClusterKey()
+
+	model.applyClusterRefresh([]store.ClusterSummary{second, first}, currentKey)
+
+	if model.payload.Clusters[model.selected].ID != 1 {
+		t.Fatalf("selected cluster = %d, want 1", model.payload.Clusters[model.selected].ID)
+	}
+	got, ok := model.selectedMember()
+	if !ok {
+		t.Fatal("no selected member after refresh")
+	}
+	if got.Thread.Number != 102 {
+		t.Fatalf("member selection after reorder = #%d, want #102", got.Thread.Number)
+	}
+	if model.detailView.YOffset != 7 {
+		t.Fatalf("detail offset after refresh reorder = %d, want 7", model.detailView.YOffset)
+	}
+}
+
+func TestTUISelectVisibleClusterID(t *testing.T) {
+	clusters := sampleTUIClusters()
+	model := newClusterBrowserModel(context.Background(), nil, 0, clusterBrowserPayload{
+		Repository: "openclaw/openclaw",
+		Sort:       "recent",
+		Clusters:   clusters,
+	})
+
+	targetID := clusters[1].ID
+	if !model.selectVisibleClusterID(targetID) {
+		t.Fatal("selectVisibleClusterID returned false for visible cluster")
+	}
+	if model.payload.Clusters[model.selected].ID != targetID {
+		t.Fatalf("selected cluster = %d, want %d", model.payload.Clusters[model.selected].ID, targetID)
+	}
+	if model.selectVisibleClusterID(999) {
+		t.Fatal("selectVisibleClusterID returned true for missing cluster")
+	}
+}
+
+func TestTUIApplyClusterFiltersPreservesClusterSource(t *testing.T) {
+	runCluster := store.ClusterSummary{ID: 7, Source: store.ClusterSourceRun, Status: "active", StableSlug: "run", MemberCount: 2, UpdatedAt: "2026-04-27T00:00:00Z"}
+	durableCluster := store.ClusterSummary{ID: 7, Source: store.ClusterSourceDurable, Status: "active", StableSlug: "durable", MemberCount: 2, UpdatedAt: "2026-04-27T00:00:00Z"}
+	model := newClusterBrowserModel(context.Background(), nil, 0, clusterBrowserPayload{
+		Repository: "openclaw/openclaw",
+		Sort:       "recent",
+		MinSize:    1,
+		Clusters:   []store.ClusterSummary{runCluster, durableCluster},
+	})
+	model.selected = 1
+
+	model.applyClusterFilters()
+
+	if got := clusterSummaryKey(model.payload.Clusters[model.selected]); got != clusterSummaryKey(durableCluster) {
+		t.Fatalf("selected cluster key = %q, want %q", got, clusterSummaryKey(durableCluster))
+	}
+}
+
 // TestTUIDetailViewportScrollsWithKeyboard guards the regression where the
 // detail pane could not be scrolled by any input. detailView.SetContent was
 // only called from renderDetail (a View() value-receiver copy), so the
