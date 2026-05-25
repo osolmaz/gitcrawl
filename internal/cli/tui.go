@@ -2743,11 +2743,19 @@ func (m *clusterBrowserModel) syncComponents() {
 		m.detailView.GotoTop()
 		m.detailContentKey = contentKey
 	}
-	m.detailView.SetContent(m.detailPaneText(detailW))
+	m.syncDetailViewContent()
+	m.searchInput.Width = maxInt(20, m.width-16)
+}
+
+func (m *clusterBrowserModel) syncDetailViewContent() {
+	width := m.detailView.Width
+	if width <= 0 {
+		width = maxInt(1, m.layout().detail.w-4)
+	}
+	m.detailView.SetContent(m.detailPaneText(width))
 	if m.detailView.PastBottom() {
 		m.detailView.GotoBottom()
 	}
-	m.searchInput.Width = maxInt(20, m.width-16)
 }
 
 func (m clusterBrowserModel) detailPaneContentKey() string {

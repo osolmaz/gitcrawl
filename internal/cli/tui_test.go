@@ -3522,6 +3522,47 @@ func TestTUIMemberChangeResetsDetailScroll(t *testing.T) {
 	}
 }
 
+func TestTUIDetailPaneScrollsWithSyncedContent(t *testing.T) {
+	model := newClusterBrowserModel(context.Background(), nil, 0, clusterBrowserPayload{
+		Repository: "openclaw/openclaw",
+		Sort:       "recent",
+		Clusters:   sampleTUIClusters(),
+	})
+	member := store.ClusterMemberDetail{
+		Thread: store.Thread{
+			ID:         1,
+			Number:     10,
+			Kind:       "issue",
+			State:      "open",
+			Title:      "Scrollable detail",
+			HTMLURL:    "https://github.com/openclaw/openclaw/issues/10",
+			LabelsJSON: "[]",
+		},
+		BodySnippet: strings.Repeat("detail body line\n", 80),
+	}
+	model.detail = store.ClusterDetail{Cluster: sampleTUIClusters()[0], Members: []store.ClusterMemberDetail{member}}
+	model.hasDetail = true
+	model.memberRows = []memberRow{{selectable: true, member: member}}
+	model.memberIndex = 0
+	model.width = 120
+	model.height = 24
+	model.focus = focusDetail
+	model.syncComponents()
+
+	model.move(3)
+
+	if model.detailView.YOffset == 0 {
+		t.Fatal("detail scroll offset stayed at 0 after detail move")
+	}
+	model.detailView.GotoTop()
+	layout := model.layout()
+	model.mouseWheel(layout, tea.MouseMsg{X: layout.detail.x + 1, Y: layout.detail.y + 3}, 3)
+	model.applyQueuedWheelScroll()
+	if model.detailView.YOffset == 0 {
+		t.Fatal("detail wheel left scroll offset at 0")
+	}
+}
+
 func TestTUIMemberMovementHonorsStepSize(t *testing.T) {
 	model := newClusterBrowserModel(context.Background(), nil, 0, clusterBrowserPayload{
 		Repository: "openclaw/openclaw",
