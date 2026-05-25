@@ -174,6 +174,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.runEmbed(ctx, rest[1:])
 	case "clusters":
 		return a.runClusters(ctx, rest[1:])
+	case "clusters-report":
+		return a.runClustersReport(ctx, rest[1:])
 	case "durable-clusters":
 		return a.runDurableClusters(ctx, rest[1:])
 	case "cluster-detail":
@@ -1273,6 +1275,25 @@ func (a *App) runDurableClusters(ctx context.Context, args []string) error {
 	return a.runClusterList(ctx, "durable-clusters", args, true)
 }
 
+type clustersReport struct {
+	Repository  string                `json:"repository"`
+	GeneratedAt string                `json:"generated_at"`
+	Sort        string                `json:"sort"`
+	MinSize     int                   `json:"min_size"`
+	Limit       int                   `json:"limit"`
+	MemberLimit int                   `json:"member_limit"`
+	HideClosed  bool                  `json:"hide_closed,omitempty"`
+	Clusters    []store.ClusterDetail `json:"clusters"`
+	Totals      clustersReportTotals  `json:"totals"`
+}
+
+type clustersReportTotals struct {
+	ClusterCount int `json:"cluster_count"`
+	MemberCount  int `json:"member_count"`
+	OpenCount    int `json:"open_count"`
+	ClosedCount  int `json:"closed_count"`
+}
+
 func clusterListIncludesClosed(durable bool, includeClosed bool, hideClosed bool) bool {
 	if hideClosed {
 		return false
@@ -1345,6 +1366,276 @@ func (a *App) runClusterList(ctx context.Context, command string, args []string,
 		"repository": repo.FullName,
 		"clusters":   clusters,
 	}, true)
+}
+
+func (a *App) runClustersReport(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("clusters-report", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	minSizeRaw := fs.String("min-size", "5", "minimum active member count")
+	limitRaw := fs.String("limit", "10", "maximum cluster rows")
+	memberLimitRaw := fs.String("member-limit", "8", "maximum member rows per cluster")
+	bodyCharsRaw := fs.String("body-chars", "240", "maximum body snippet characters")
+	sortMode := fs.String("sort", "size", "sort mode: size|recent|oldest")
+	includeClosed := fs.Bool("include-closed", false, "deprecated; clusters include closed rows by default")
+	hideClosed := fs.Bool("hide-closed", false, "hide locally closed clusters")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if err := fs.Parse(normalizeCommandArgs(args, map[string]bool{"min-size": true, "limit": true, "member-limit": true, "body-chars": true, "sort": true})); err != nil {
+		return usageErr(err)
+	}
+	a.applyCommandJSON(*jsonOut)
+	if fs.NArg() != 1 {
+		return usageErr(fmt.Errorf("clusters-report requires owner/repo"))
+	}
+	owner, repoName, err := parseOwnerRepo(fs.Arg(0))
+	if err != nil {
+		return usageErr(err)
+	}
+	minSize, err := parseOptionalPositiveInt(*minSizeRaw)
+	if err != nil {
+		return usageErr(err)
+	}
+	limit, err := parseOptionalPositiveInt(*limitRaw)
+	if err != nil {
+		return usageErr(err)
+	}
+	memberLimit, err := parseOptionalPositiveInt(*memberLimitRaw)
+	if err != nil {
+		return usageErr(err)
+	}
+	bodyChars, err := parseOptionalPositiveInt(*bodyCharsRaw)
+	if err != nil {
+		return usageErr(err)
+	}
+	sort := strings.TrimSpace(*sortMode)
+	if sort != "recent" && sort != "oldest" && sort != "size" {
+		return usageErr(fmt.Errorf("unsupported sort %q", sort))
+	}
+
+	rt, err := a.openLocalRuntimeReadOnly(ctx)
+	if err != nil {
+		return err
+	}
+	defer rt.Store.Close()
+	repo, err := rt.repository(ctx, owner, repoName)
+	if err != nil {
+		return err
+	}
+	summaries, err := rt.Store.ListDisplayClusterSummaries(ctx, store.ClusterSummaryOptions{
+		RepoID:        repo.ID,
+		IncludeClosed: clusterListIncludesClosed(false, *includeClosed, *hideClosed),
+		MinSize:       minSize,
+		Limit:         limit,
+		Sort:          sort,
+	})
+	if err != nil {
+		return err
+	}
+	report := clustersReport{
+		Repository:  repo.FullName,
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Sort:        sort,
+		MinSize:     minSize,
+		Limit:       limit,
+		MemberLimit: memberLimit,
+		HideClosed:  *hideClosed,
+		Clusters:    make([]store.ClusterDetail, 0, len(summaries)),
+	}
+	for _, summary := range summaries {
+		detail, err := rt.Store.ClusterDetail(ctx, store.ClusterDetailOptions{
+			RepoID:        repo.ID,
+			ClusterID:     summary.ID,
+			Source:        summary.Source,
+			IncludeClosed: clusterListIncludesClosed(false, *includeClosed, *hideClosed),
+			MemberLimit:   memberLimit,
+			BodyChars:     bodyChars,
+		})
+		if err != nil {
+			return err
+		}
+		report.Clusters = append(report.Clusters, detail)
+		report.Totals.MemberCount += detail.Cluster.MemberCount
+		if detail.Cluster.Status == "closed" || detail.Cluster.ClosedAt != "" {
+			report.Totals.ClosedCount++
+		} else {
+			report.Totals.OpenCount++
+		}
+	}
+	report.Totals.ClusterCount = len(report.Clusters)
+	return a.writeClustersReport(report)
+}
+
+func (a *App) writeClustersReport(report clustersReport) error {
+	if a.format == FormatJSON {
+		return a.writeOutput("clusters-report", report, true)
+	}
+	_, err := fmt.Fprint(a.Stdout, renderClustersReportMarkdown(report))
+	return err
+}
+
+func renderClustersReportMarkdown(report clustersReport) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Cluster Report: %s\n\n", report.Repository)
+	fmt.Fprintf(&b, "Generated: %s UTC\n", report.GeneratedAt)
+	fmt.Fprintf(&b, "View: top %d clusters, min size %d, sorted by %s", report.Limit, report.MinSize, report.Sort)
+	if report.HideClosed {
+		b.WriteString(", closed hidden")
+	}
+	b.WriteString("\n\n")
+	fmt.Fprintf(&b, "**Totals:** %d clusters, %d total members, %d open, %d closed.\n\n", report.Totals.ClusterCount, report.Totals.MemberCount, report.Totals.OpenCount, report.Totals.ClosedCount)
+	if len(report.Clusters) == 0 {
+		b.WriteString("No clusters matched the selected filters.\n")
+		return b.String()
+	}
+	b.WriteString("## At a Glance\n\n")
+	b.WriteString("| Rank | Cluster | Members | Status | Representative | Updated |\n")
+	b.WriteString("| ---: | --- | ---: | --- | --- | --- |\n")
+	for index, detail := range report.Clusters {
+		cluster := detail.Cluster
+		fmt.Fprintf(&b, "| %d | `%s` | %d | %s | %s | %s |\n",
+			index+1,
+			markdownTableText(firstNonEmpty(cluster.StableSlug, fmt.Sprintf("cluster-%d", cluster.ID))),
+			cluster.MemberCount,
+			markdownTableText(firstNonEmpty(cluster.Status, "unknown")),
+			markdownTableText(clusterRepresentativeMarkdown(cluster)),
+			markdownTableText(shortTime(cluster.UpdatedAt)),
+		)
+	}
+	for index, detail := range report.Clusters {
+		cluster := detail.Cluster
+		title := firstNonEmpty(cluster.RepresentativeTitle, cluster.Title, "Untitled cluster")
+		fmt.Fprintf(&b, "\n## %d. %s\n\n", index+1, markdownHeadingText(title))
+		fmt.Fprintf(&b, "- Cluster: `%s` (`%d`)\n", firstNonEmpty(cluster.StableSlug, fmt.Sprintf("cluster-%d", cluster.ID)), cluster.ID)
+		fmt.Fprintf(&b, "- Status: %s\n", firstNonEmpty(cluster.Status, "unknown"))
+		fmt.Fprintf(&b, "- Members: %d total, %d shown\n", cluster.MemberCount, len(detail.Members))
+		fmt.Fprintf(&b, "- Representative: %s\n", clusterRepresentativeMarkdown(cluster))
+		if cluster.UpdatedAt != "" {
+			fmt.Fprintf(&b, "- Last updated: %s\n", shortTime(cluster.UpdatedAt))
+		}
+		if cluster.ClosedAt != "" {
+			fmt.Fprintf(&b, "- Closed locally: %s\n", shortTime(cluster.ClosedAt))
+		}
+		b.WriteString("\n")
+		renderClusterMemberTable(&b, detail.Members)
+		renderClusterSnippetList(&b, detail.Members)
+	}
+	return b.String()
+}
+
+func renderClusterMemberTable(b *strings.Builder, members []store.ClusterMemberDetail) {
+	if len(members) == 0 {
+		b.WriteString("No visible members.\n")
+		return
+	}
+	b.WriteString("| Type | Number | State | Score | Title | Labels |\n")
+	b.WriteString("| --- | ---: | --- | ---: | --- | --- |\n")
+	for _, member := range members {
+		thread := member.Thread
+		score := ""
+		if member.ScoreToRepresentative != nil {
+			score = fmt.Sprintf("%.3f", *member.ScoreToRepresentative)
+		}
+		fmt.Fprintf(b, "| %s | %s | %s | %s | %s | %s |\n",
+			markdownTableText(kindTitle(thread.Kind)),
+			markdownTableText(threadMarkdownLink(thread)),
+			markdownTableText(firstNonEmpty(thread.State, member.State, "unknown")),
+			markdownTableText(score),
+			markdownTableText(thread.Title),
+			markdownTableText(strings.Join(cliLabelNames(thread.LabelsJSON), ", ")),
+		)
+	}
+}
+
+func renderClusterSnippetList(b *strings.Builder, members []store.ClusterMemberDetail) {
+	wroteHeading := false
+	count := 0
+	for _, member := range members {
+		snippet := strings.TrimSpace(member.BodySnippet)
+		if snippet == "" {
+			continue
+		}
+		if !wroteHeading {
+			b.WriteString("\nKey snippets:\n\n")
+			wroteHeading = true
+		}
+		fmt.Fprintf(b, "- %s: %s\n", threadMarkdownLink(member.Thread), markdownInlineText(snippet))
+		count++
+		if count >= 3 {
+			break
+		}
+	}
+}
+
+func clusterRepresentativeMarkdown(cluster store.ClusterSummary) string {
+	if cluster.RepresentativeNumber <= 0 {
+		return "unknown"
+	}
+	return fmt.Sprintf("%s #%d", kindTitle(cluster.RepresentativeKind), cluster.RepresentativeNumber)
+}
+
+func threadMarkdownLink(thread store.Thread) string {
+	label := fmt.Sprintf("#%d", thread.Number)
+	if strings.TrimSpace(thread.HTMLURL) == "" {
+		return label
+	}
+	return fmt.Sprintf("[%s](%s)", label, strings.TrimSpace(thread.HTMLURL))
+}
+
+func markdownHeadingText(value string) string {
+	value = strings.ReplaceAll(strings.TrimSpace(value), "\n", " ")
+	value = strings.ReplaceAll(value, "#", "\\#")
+	return value
+}
+
+func markdownInlineText(value string) string {
+	return strings.Join(strings.Fields(value), " ")
+}
+
+func markdownTableText(value string) string {
+	value = markdownInlineText(value)
+	value = strings.ReplaceAll(value, "|", "\\|")
+	return value
+}
+
+func shortTime(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t.Format("2006-01-02")
+	}
+	if len(value) >= len("2006-01-02") {
+		return value[:len("2006-01-02")]
+	}
+	return value
+}
+
+func cliLabelNames(raw string) []string {
+	var labels []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(raw), &labels); err == nil {
+		out := make([]string, 0, len(labels))
+		for _, label := range labels {
+			if name := strings.TrimSpace(label.Name); name != "" {
+				out = append(out, name)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(raw), &names); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if name = strings.TrimSpace(name); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func (a *App) runTUI(ctx context.Context, args []string) error {
@@ -3619,6 +3910,7 @@ Core commands:
   set-cluster-canonical
                        set the canonical row for a durable cluster
   clusters             list latest run cluster summaries, with durable fallback
+  clusters-report      write a Markdown report for the top clusters
   durable-clusters     list durable cluster groups
   cluster-detail       dump one latest run cluster, with durable fallback
   cluster-explain      alias for cluster-detail
@@ -3697,6 +3989,11 @@ Usage:
 
 Usage:
   gitcrawl clusters owner/repo [--sort size|recent|oldest] [--min-size N] [--limit N] [--hide-closed] [--json]
+`,
+	"clusters-report": `gitcrawl clusters-report writes a Markdown report for top display clusters.
+
+Usage:
+  gitcrawl clusters-report owner/repo [--sort size|recent|oldest] [--min-size N] [--limit N] [--member-limit N] [--body-chars N] [--hide-closed] [--json]
 `,
 	"durable-clusters": `gitcrawl durable-clusters lists governed durable cluster groups.
 

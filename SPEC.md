@@ -71,6 +71,7 @@ Public commands:
 - `threads`
 - `runs`
 - `clusters`
+- `clusters-report`
 - `durable-clusters`
 - `cluster-detail`
 - `cluster-explain`

@@ -165,7 +165,7 @@ func TestMetadataStatusAndControlStatusJSON(t *testing.T) {
 	if !strings.Contains(helpOut.String(), "cluster browser") {
 		t.Fatalf("tui help output = %q", helpOut.String())
 	}
-	for _, topic := range []string{"metadata", "status", "init", "configure", "doctor", "sync", "refresh", "embed", "threads", "search", "cluster", "clusters", "durable-clusters", "cluster-detail", "cluster-explain", "neighbors", "runs", "close-thread", "reopen-thread", "close-cluster", "reopen-cluster", "exclude-cluster-member", "include-cluster-member", "set-cluster-canonical", "gh"} {
+	for _, topic := range []string{"metadata", "status", "init", "configure", "doctor", "sync", "refresh", "embed", "threads", "search", "cluster", "clusters", "clusters-report", "durable-clusters", "cluster-detail", "cluster-explain", "neighbors", "runs", "close-thread", "reopen-thread", "close-cluster", "reopen-cluster", "exclude-cluster-member", "include-cluster-member", "set-cluster-canonical", "gh"} {
 		helpOut.Reset()
 		if err := help.printCommandUsage(topic); err != nil {
 			t.Fatalf("%s help: %v", topic, err)
@@ -1337,6 +1337,9 @@ func TestAppOutputModesAndUsageBranches(t *testing.T) {
 		{"embed", "openclaw/openclaw", "--number", "bad"},
 		{"clusters", "--unknown"},
 		{"clusters", "openclaw/openclaw", "--sort", "bogus"},
+		{"clusters-report", "--unknown"},
+		{"clusters-report", "openclaw/openclaw", "--sort", "bogus"},
+		{"clusters-report", "openclaw/openclaw", "--limit", "bad"},
 		{"tui", "--unknown"},
 		{"tui", "openclaw/openclaw", "extra"},
 		{"tui", "openclaw/openclaw", "--min-size", "bad"},
@@ -1394,6 +1397,7 @@ func TestAppOutputModesAndUsageBranches(t *testing.T) {
 		{"neighbors", "openclaw/openclaw", "--number", "1"},
 		{"cluster", "openclaw/openclaw"},
 		{"clusters", "openclaw/openclaw"},
+		{"clusters-report", "openclaw/openclaw"},
 		{"cluster-detail", "openclaw/openclaw", "--id", "1"},
 		{"runs", "openclaw/openclaw"},
 		{"threads", "openclaw/openclaw"},
@@ -1950,6 +1954,26 @@ func TestCommandFlowCoversSearchEmbedNeighborsClusterDetailRunsAndRefresh(t *tes
 		t.Fatalf("clusters output = %q", stdout.String())
 	}
 
+	report := New()
+	stdout.Reset()
+	report.Stdout = &stdout
+	if err := report.Run(ctx, []string{"--config", configPath, "clusters-report", "openclaw/openclaw", "--sort", "oldest", "--min-size", "1", "--limit", "3", "--member-limit", "5"}); err != nil {
+		t.Fatalf("clusters-report: %v", err)
+	}
+	if out := stdout.String(); !strings.Contains(out, "# Cluster Report: openclaw/openclaw") || !strings.Contains(out, "sorted by oldest") || !strings.Contains(out, "total members") || !strings.Contains(out, "## At a Glance") || !strings.Contains(out, "Gateway websocket stalls") {
+		t.Fatalf("clusters-report output = %q", out)
+	}
+
+	reportJSON := New()
+	stdout.Reset()
+	reportJSON.Stdout = &stdout
+	if err := reportJSON.Run(ctx, []string{"--config", configPath, "clusters-report", "openclaw/openclaw", "--sort", "size", "--min-size", "1", "--limit", "3", "--member-limit", "5", "--json"}); err != nil {
+		t.Fatalf("clusters-report json: %v", err)
+	}
+	if out := stdout.String(); !strings.Contains(out, `"repository": "openclaw/openclaw"`) || !strings.Contains(out, `"clusters"`) {
+		t.Fatalf("clusters-report json output = %q", out)
+	}
+
 	durable := New()
 	stdout.Reset()
 	durable.Stdout = &stdout
@@ -2007,6 +2031,118 @@ func TestCommandFlowCoversSearchEmbedNeighborsClusterDetailRunsAndRefresh(t *tes
 	}
 	if len(threads) != 2 {
 		t.Fatalf("threads by ids = %+v", threads)
+	}
+}
+
+func TestClustersReportUsesDisplaySummarySourceForCollidingIDs(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	dbPath := filepath.Join(dir, "gitcrawl.db")
+	if err := New().Run(ctx, []string{"--config", configPath, "init", "--db", dbPath}); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	st, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	repoID, err := st.UpsertRepository(ctx, store.Repository{
+		Owner:     "openclaw",
+		Name:      "openclaw",
+		FullName:  "openclaw/openclaw",
+		RawJSON:   "{}",
+		UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("seed repository: %v", err)
+	}
+	rawID, err := st.UpsertThread(ctx, store.Thread{
+		RepoID: repoID, GitHubID: "101", Number: 101, Kind: "issue", State: "open",
+		Title: "Raw live cluster", Body: "raw cluster body",
+		HTMLURL:       "https://github.com/openclaw/openclaw/issues/101",
+		LabelsJSON:    "[]",
+		AssigneesJSON: "[]",
+		RawJSON:       "{}",
+		ContentHash:   "raw",
+		UpdatedAt:     now,
+	})
+	if err != nil {
+		t.Fatalf("seed raw thread: %v", err)
+	}
+	durableID, err := st.UpsertThread(ctx, store.Thread{
+		RepoID: repoID, GitHubID: "201", Number: 201, Kind: "issue", State: "closed",
+		Title: "Durable historical cluster", Body: "durable cluster body",
+		HTMLURL:       "https://github.com/openclaw/openclaw/issues/201",
+		LabelsJSON:    "[]",
+		AssigneesJSON: "[]",
+		RawJSON:       "{}",
+		ContentHash:   "durable",
+		UpdatedAt:     now,
+	})
+	if err != nil {
+		t.Fatalf("seed durable thread: %v", err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `
+		insert into cluster_runs(id, repo_id, scope, status, started_at, finished_at, stats_json)
+		values(9, ?, 'repo', 'completed', '2026-05-01T00:00:00Z', '2026-05-01T00:01:00Z', '{}')
+	`, repoID); err != nil {
+		t.Fatalf("seed raw cluster run: %v", err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `
+		insert into clusters(id, repo_id, cluster_run_id, representative_thread_id, member_count, created_at)
+		values(77, ?, 9, ?, 1, '2026-05-01T00:01:00Z')
+	`, repoID, rawID); err != nil {
+		t.Fatalf("seed raw cluster: %v", err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `
+		insert into cluster_members(cluster_id, thread_id, score_to_representative, created_at)
+		values(77, ?, 1.0, '2026-05-01T00:01:00Z')
+	`, rawID); err != nil {
+		t.Fatalf("seed raw cluster member: %v", err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `
+		insert into cluster_groups(id, repo_id, stable_key, stable_slug, status, representative_thread_id, title, created_at, updated_at, closed_at)
+		values(77, ?, 'closed-durable', 'closed-durable', 'closed', ?, 'Durable historical cluster', '2026-04-01T00:00:00Z', '2026-04-02T00:00:00Z', '2026-04-02T00:00:00Z')
+	`, repoID, durableID); err != nil {
+		t.Fatalf("seed durable cluster: %v", err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `
+		insert into cluster_closures(cluster_id, reason, actor_kind, created_at, updated_at)
+		values(77, 'handled', 'local', '2026-04-02T00:00:00Z', '2026-04-02T00:00:00Z')
+	`); err != nil {
+		t.Fatalf("seed durable closure: %v", err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `
+		insert into cluster_memberships(cluster_id, thread_id, role, state, added_by, added_reason_json, created_at, updated_at)
+		values(77, ?, 'representative', 'active', 'system', '{}', '2026-04-01T00:00:00Z', '2026-04-01T00:00:00Z')
+	`, durableID); err != nil {
+		t.Fatalf("seed durable member: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	run := New()
+	var stdout bytes.Buffer
+	run.Stdout = &stdout
+	if err := run.Run(ctx, []string{"--config", configPath, "clusters-report", "openclaw/openclaw", "--sort", "size", "--min-size", "1", "--limit", "2", "--member-limit", "5", "--json"}); err != nil {
+		t.Fatalf("clusters-report: %v", err)
+	}
+	var payload struct {
+		Clusters []store.ClusterDetail `json:"clusters"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode report: %v\n%s", err, stdout.String())
+	}
+	if len(payload.Clusters) != 2 {
+		t.Fatalf("report clusters = %#v", payload.Clusters)
+	}
+	if payload.Clusters[0].Cluster.Source != store.ClusterSourceRun || payload.Clusters[0].Members[0].Thread.Number != 101 {
+		t.Fatalf("raw report detail used wrong source: %#v", payload.Clusters[0])
+	}
+	if payload.Clusters[1].Cluster.Source != store.ClusterSourceDurable || payload.Clusters[1].Members[0].Thread.Number != 201 {
+		t.Fatalf("durable report detail used wrong source: %#v", payload.Clusters[1])
 	}
 }
 
