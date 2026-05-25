@@ -76,6 +76,25 @@ gitcrawl durable-clusters owner/repo --include-closed
 
 GitHub-closed members are hidden from latest-run cluster summaries by default; pass `--include-closed` to see the full historical view.
 
+## Cluster report
+
+```bash
+gitcrawl clusters-report owner/repo --limit 10 --min-size 5
+gitcrawl clusters-report owner/repo --json
+```
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--sort recent\|oldest\|size` | `size` | Ordering |
+| `--min-size <n>` | `5` | Minimum active member count |
+| `--limit <n>` | `10` | Maximum cluster rows |
+| `--member-limit <n>` | `8` | Maximum member rows per cluster |
+| `--body-chars <n>` | `240` | Body snippet length per member |
+| `--hide-closed` | _(off)_ | Hide locally closed clusters |
+| `--json` | _(off)_ | Emit the hydrated report payload |
+
+The Markdown report uses the same display view as `gitcrawl clusters`, then adds an at-a-glance table, per-cluster metadata, member tables, and key snippets.
+
 ## Inspect a cluster
 
 ```bash

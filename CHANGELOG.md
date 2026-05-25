@@ -3,6 +3,8 @@
 ## 0.4.6 - Unreleased
 
 - Add an optional TUI focus layout, configurable with `gitcrawl tui --layout focus`, `tui.default_layout`, or `GITCRAWL_TUI_LAYOUT`, thanks @RomneyDa.
+- Add `gitcrawl clusters-report` for Markdown or JSON cluster triage reports, thanks @RomneyDa.
+- Add extra regression coverage for TUI detail-pane keyboard and wheel scrolling, thanks @RomneyDa.
 
 ## 0.4.5 - 2026-05-23
 

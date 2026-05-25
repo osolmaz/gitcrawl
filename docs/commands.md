@@ -77,6 +77,7 @@ This applies to `sync --numbers`, `threads --numbers`, `embed --number`,
 | --- | --- | --- |
 | `gitcrawl cluster owner/repo [--threshold --min-size --max-cluster-size --k --cross-kind-threshold --limit --model --basis --include-closed --json]` | Build durable clusters from vectors | [Clustering](/clustering/#generate-clusters) |
 | `gitcrawl clusters owner/repo [--sort size\|recent\|oldest --min-size --limit --hide-closed --json]` | Latest-run cluster summary, merged with closed durable rows | [Clustering](/clustering/#list-clusters) |
+| `gitcrawl clusters-report owner/repo [--sort size\|recent\|oldest --min-size --limit --member-limit --body-chars --hide-closed --json]` | Markdown or JSON report for top display clusters | [Clustering](/clustering/#cluster-report) |
 | `gitcrawl durable-clusters owner/repo [--include-closed --sort --min-size --limit --json]` | Strict durable-cluster audit view | [Clustering](/clustering/#list-clusters) |
 | `gitcrawl cluster-detail owner/repo --id <n> [--source auto\|run\|durable --member-limit --body-chars --hide-closed --json]` | Cluster + members detail | [Clustering](/clustering/#inspect-a-cluster) |
 | `gitcrawl cluster-explain owner/repo --id <n> [...]` | Alias for `cluster-detail` | [Clustering](/clustering/#inspect-a-cluster) |
