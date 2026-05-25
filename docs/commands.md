@@ -97,7 +97,7 @@ This applies to `sync --numbers`, `threads --numbers`, `embed --number`,
 
 | Command | Purpose | Docs |
 | --- | --- | --- |
-| `gitcrawl tui [owner/repo] [--min-size --sort --limit --hide-closed --json]` | Interactive cluster browser; `--json` emits a snapshot instead of launching the UI | [TUI](/tui/) |
+| `gitcrawl tui [owner/repo] [--min-size --sort --layout --limit --hide-closed --json]` | Interactive cluster browser; `--json` emits a snapshot instead of launching the UI | [TUI](/tui/) |
 
 ## gh shim
 

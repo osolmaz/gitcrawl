@@ -25,6 +25,7 @@ gitcrawl tui owner/repo
 gitcrawl tui                      # infers the most recently updated local repo
 gitcrawl tui --min-size 5         # default; show clusters with ≥5 active members
 gitcrawl tui --sort recent        # alternate sort
+gitcrawl tui --layout focus       # wider detail pane with members below
 gitcrawl tui --hide-closed        # focus only on currently open clusters
 ```
 
@@ -32,6 +33,7 @@ gitcrawl tui --hide-closed        # focus only on currently open clusters
 | --- | --- | --- |
 | `--min-size <n>` | `5` | Minimum active member count |
 | `--sort recent\|oldest\|size` | `size` | Cluster ordering |
+| `--layout columns\|right-stack\|focus` | `columns` | Wide-screen pane layout |
 | `--limit <n>` | `500` | Working-set cap (rows fetched into the TUI) |
 | `--hide-closed` | _(off)_ | Hide locally closed clusters |
 | `--include-closed` | _(deprecated)_ | Closed clusters are included by default |
@@ -41,7 +43,7 @@ When `--json` is passed, the TUI command produces the same cluster summary the i
 
 ## Default behavior
 
-The TUI starts at `--min-size 5` and `--sort size` so the first screen is the useful triage workload, not singleton noise. Pass `--min-size 1` when you intentionally want singletons (e.g., looking for orphans).
+The TUI starts at `--min-size 5`, `--sort size`, and `--layout columns` so the first screen is the useful triage workload, not singleton noise. Pass `--min-size 1` when you intentionally want singletons (e.g., looking for orphans), or `--layout focus` when you want the detail pane wider with members below.
 
 The view auto-refreshes from the local store every 15 seconds. There is no GitHub call from the TUI itself — to bring in fresh upstream data, run `gitcrawl sync` (or `refresh`) in another terminal and the TUI picks it up on the next tick.
 

@@ -1726,6 +1726,19 @@ func TestTUIJSONUsesDefaultsWhenConfigMissing(t *testing.T) {
 		t.Fatalf("config file should not be created, stat err=%v", err)
 	}
 
+	t.Setenv("GITCRAWL_TUI_LAYOUT", "right-stack")
+	stdout.Reset()
+	if err := run.Run(ctx, []string{"--config", configPath, "tui", "--json"}); err != nil {
+		t.Fatalf("tui env layout: %v", err)
+	}
+	payload = map[string]any{}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("decode env layout payload: %v\n%s", err, stdout.String())
+	}
+	if payload["layout"] != "right-stack" {
+		t.Fatalf("env layout = %#v", payload["layout"])
+	}
+
 	stdout.Reset()
 	if err := run.Run(ctx, []string{"--config", configPath, "tui", "--json", "--layout", "bogus"}); err == nil || !strings.Contains(err.Error(), `unsupported layout "bogus"`) {
 		t.Fatalf("bogus layout err = %v", err)

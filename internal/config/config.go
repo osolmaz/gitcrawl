@@ -181,9 +181,7 @@ func (c *Config) Normalize() error {
 		c.TUI.DefaultSort = def.TUI.DefaultSort
 	}
 	if c.TUI.DefaultLayout == "" {
-		c.TUI.DefaultLayout = c.envOrDefault("GITCRAWL_TUI_LAYOUT", def.TUI.DefaultLayout)
-	} else {
-		c.TUI.DefaultLayout = c.envOrDefault("GITCRAWL_TUI_LAYOUT", c.TUI.DefaultLayout)
+		c.TUI.DefaultLayout = def.TUI.DefaultLayout
 	}
 	c.DBPath = expandHome(c.DBPath)
 	c.CacheDir = expandHome(c.CacheDir)
@@ -199,6 +197,7 @@ func (c *Config) Normalize() error {
 func (c *Config) ApplyRuntimeEnv() {
 	c.OpenAI.SummaryModel = c.envOrDefault("GITCRAWL_SUMMARY_MODEL", c.OpenAI.SummaryModel)
 	c.OpenAI.EmbedModel = c.envOrDefault("GITCRAWL_EMBED_MODEL", c.OpenAI.EmbedModel)
+	c.TUI.DefaultLayout = c.envOrDefault("GITCRAWL_TUI_LAYOUT", c.TUI.DefaultLayout)
 	vectorDirWasDefault := expandHome(c.VectorDir) == defaultVectorDirForDB(expandHome(c.DBPath))
 	c.DBPath = expandHome(c.envOrDefault("GITCRAWL_DB_PATH", c.DBPath))
 	if vectorDirWasDefault {

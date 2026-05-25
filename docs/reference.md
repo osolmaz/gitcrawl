@@ -35,6 +35,7 @@ Override the config root with `--config <path>` or `GITCRAWL_CONFIG`.
 | --- | --- | --- | --- |
 | `GITCRAWL_CONFIG` | `~/.config/gitcrawl/config.toml` | All commands | Override config path |
 | `GITCRAWL_DB_PATH` | `~/.config/gitcrawl/gitcrawl.db` | All commands | Override database path |
+| `GITCRAWL_TUI_LAYOUT` | `columns` | `tui` | Override default wide-screen layout |
 | `GITHUB_TOKEN` | _(none)_ | `sync`, `gh` shim | GitHub API token |
 | `OPENAI_API_KEY` | _(none)_ | `embed`, `refresh` | OpenAI API key |
 
@@ -77,6 +78,7 @@ Override the config root with `--config <path>` or `GITCRAWL_CONFIG`.
 | `batch_size` (embeddings) | `64` |
 | `concurrency` (embeddings) | `2` |
 | `tui_default_sort` | `size` |
+| `tui_default_layout` | `columns` |
 
 ## Clustering defaults
 
@@ -98,6 +100,7 @@ Override the config root with `--config <path>` or `GITCRAWL_CONFIG`.
 | --- | --- |
 | `--min-size` | `5` |
 | `--sort` | `size` |
+| `--layout` | `columns` |
 | Working set limit | `500` rows |
 | Refresh interval | `15s` |
 

@@ -54,6 +54,7 @@ func TestApplyRuntimeEnvUsesDBEnv(t *testing.T) {
 
 	cfg := Default()
 	cfg.DBPath = ""
+	cfg.Env = map[string]string{"GITCRAWL_TUI_LAYOUT": "focus"}
 	if err := cfg.Normalize(); err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
@@ -65,9 +66,12 @@ func TestApplyRuntimeEnvUsesDBEnv(t *testing.T) {
 	if cfg.VectorDir != wantVectorDir {
 		t.Fatalf("vector dir: got %q want %q", cfg.VectorDir, wantVectorDir)
 	}
+	if cfg.TUI.DefaultLayout != "focus" {
+		t.Fatalf("tui layout: got %q want focus", cfg.TUI.DefaultLayout)
+	}
 }
 
-func TestNormalizeUsesTUILayoutEnv(t *testing.T) {
+func TestNormalizeDoesNotPersistTUILayoutEnv(t *testing.T) {
 	t.Setenv("GITCRAWL_TUI_LAYOUT", "right-stack")
 
 	cfg := Default()
@@ -75,8 +79,8 @@ func TestNormalizeUsesTUILayoutEnv(t *testing.T) {
 	if err := cfg.Normalize(); err != nil {
 		t.Fatalf("normalize: %v", err)
 	}
-	if cfg.TUI.DefaultLayout != "right-stack" {
-		t.Fatalf("tui layout: got %q want right-stack", cfg.TUI.DefaultLayout)
+	if cfg.TUI.DefaultLayout != "columns" {
+		t.Fatalf("tui layout: got %q want columns", cfg.TUI.DefaultLayout)
 	}
 }
 

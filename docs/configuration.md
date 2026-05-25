@@ -64,6 +64,8 @@ checkout_dir = "/Users/me/.config/gitcrawl/portable"
 | `embed_model` | `text-embedding-3-small` | OpenAI embedding model |
 | `embed_dimensions` | `1024` | Must match the model |
 | `embedding_basis` | `title_original` | Only `title_original` is implemented |
+| `[tui].default_sort` | `size` | Default TUI cluster ordering |
+| `[tui].default_layout` | `columns` | Default wide-screen TUI layout: `columns`, `right-stack`, or `focus` |
 | `[env]` | _(empty)_ | Config-backed fallback after real process env for env-derived values such as tokens, DB path, and model overrides |
 | `[portable_store]` | _(empty)_ | Used when working from a shared, Git-backed cache |
 
@@ -75,6 +77,7 @@ checkout_dir = "/Users/me/.config/gitcrawl/portable"
 | --- | --- |
 | `GITCRAWL_CONFIG` | Override config path |
 | `GITCRAWL_DB_PATH` | Override database path |
+| `GITCRAWL_TUI_LAYOUT` | Override default TUI layout (`columns`, `right-stack`, or `focus`) |
 | `GITHUB_TOKEN` | GitHub API token (required for `sync`, `gh` shim fallthroughs) |
 | `OPENAI_API_KEY` | OpenAI API key (required for `embed`) |
 
