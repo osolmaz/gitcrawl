@@ -17,9 +17,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openclaw/crawlkit/control"
+	crawlremote "github.com/openclaw/crawlkit/remote"
 	clusterer "github.com/openclaw/gitcrawl/internal/cluster"
 	"github.com/openclaw/gitcrawl/internal/config"
 	"github.com/openclaw/gitcrawl/internal/store"
+	"github.com/zalando/go-keyring"
 )
 
 func TestInitWritesConfig(t *testing.T) {
@@ -68,6 +71,377 @@ func TestInitDefaultOutputIsHumanReadable(t *testing.T) {
 	}
 	if strings.Contains(out, `"config_path"`) || strings.Contains(out, "{") {
 		t.Fatalf("default init output should not be json, got %q", out)
+	}
+}
+
+func TestRemoteCloudModeDoesNotCreateLocalDB(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("CRAWL_REMOTE_TOKEN", "test-token")
+
+	var sawQuery bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("authorization"); got != "Bearer test-token" {
+			http.Error(w, "missing bearer", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		switch r.URL.EscapedPath() {
+		case "/v1/apps/gitcrawl/archives/gitcrawl%2Fopenclaw__openclaw/status":
+			_ = json.NewEncoder(w).Encode(crawlremote.Status{
+				App:          "gitcrawl",
+				Archive:      "gitcrawl/openclaw__openclaw",
+				Mode:         "cloud",
+				LastIngestAt: "2026-05-27T12:00:00Z",
+				Counts: []control.Count{
+					control.NewCount("repositories", "Repositories", 1),
+					control.NewCount("threads", "Threads", 2),
+				},
+			})
+		case "/v1/apps/gitcrawl/archives/gitcrawl%2Fopenclaw__openclaw/query":
+			var req crawlremote.QueryRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if req.Name != "gitcrawl.threads.search" || req.Args["owner"] != "openclaw" || req.Args["repo"] != "openclaw" {
+				http.Error(w, "unexpected query", http.StatusBadRequest)
+				return
+			}
+			sawQuery = true
+			_ = json.NewEncoder(w).Encode(crawlremote.QueryResult{
+				Values: []map[string]any{{
+					"thread_id":    10,
+					"github_id":    "I_kwD",
+					"number":       42,
+					"kind":         "issue",
+					"state":        "open",
+					"title":        "remote search",
+					"html_url":     "https://github.com/openclaw/openclaw/issues/42",
+					"author_login": "alice",
+					"snippet":      "remote search",
+					"score":        0.9,
+				}},
+			})
+		case "/v1/archives":
+			_ = json.NewEncoder(w).Encode(map[string]any{"archives": []crawlremote.Archive{{ID: "gitcrawl/openclaw__openclaw", App: "gitcrawl", Slug: "openclaw__openclaw"}}})
+		case "/v1/whoami":
+			_ = json.NewEncoder(w).Encode(crawlremote.Identity{Owner: "openclaw", Org: "openclaw", Login: "alice"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(dir, "config.toml")
+	initApp := New()
+	var initOut bytes.Buffer
+	initApp.Stdout = &initOut
+	if err := initApp.Run(ctx, []string{"--config", configPath, "--json", "init", "--remote", server.URL, "--archive", "gitcrawl/openclaw__openclaw"}); err != nil {
+		t.Fatalf("remote init: %v", err)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load remote config: %v", err)
+	}
+	if cfg.Remote.Mode != "cloud" || cfg.Remote.Endpoint != server.URL || cfg.Remote.Archive != "gitcrawl/openclaw__openclaw" {
+		t.Fatalf("remote config = %#v", cfg.Remote)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".config", "gitcrawl", "gitcrawl.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remote init should not create local db, stat err=%v", err)
+	}
+
+	statusApp := New()
+	var statusOut bytes.Buffer
+	statusApp.Stdout = &statusOut
+	if err := statusApp.Run(ctx, []string{"--config", configPath, "--json", "status"}); err != nil {
+		t.Fatalf("remote status: %v", err)
+	}
+	var status map[string]any
+	if err := json.Unmarshal(statusOut.Bytes(), &status); err != nil {
+		t.Fatalf("decode status: %v\n%s", err, statusOut.String())
+	}
+	if status["database_path"] != nil {
+		t.Fatalf("remote status should not expose local database path: %#v", status)
+	}
+	remoteStatus, ok := status["remote"].(map[string]any)
+	if !ok || remoteStatus["archive"] != "gitcrawl/openclaw__openclaw" {
+		t.Fatalf("remote status missing archive: %#v", status)
+	}
+
+	searchApp := New()
+	var searchOut bytes.Buffer
+	searchApp.Stdout = &searchOut
+	if err := searchApp.Run(ctx, []string{"--config", configPath, "--json", "search", "openclaw/openclaw", "--query", "remote"}); err != nil {
+		t.Fatalf("remote search: %v", err)
+	}
+	if !sawQuery || !strings.Contains(searchOut.String(), `"remote search"`) {
+		t.Fatalf("remote search did not use worker query: saw=%v out=%s", sawQuery, searchOut.String())
+	}
+	ghSearchApp := New()
+	var ghSearchOut bytes.Buffer
+	ghSearchApp.Stdout = &ghSearchOut
+	if err := ghSearchApp.Run(ctx, []string{"--config", configPath, "search", "issues", "remote", "-R", "openclaw/openclaw", "--json", "number,title,url"}); err != nil {
+		t.Fatalf("remote gh search: %v", err)
+	}
+	if !strings.Contains(ghSearchOut.String(), `"number": 42`) || !strings.Contains(ghSearchOut.String(), `"url": "https://github.com/openclaw/openclaw/issues/42"`) {
+		t.Fatalf("remote gh search output = %s", ghSearchOut.String())
+	}
+	doctorApp := New()
+	var doctorOut bytes.Buffer
+	doctorApp.Stdout = &doctorOut
+	if err := doctorApp.Run(ctx, []string{"--config", configPath, "--json", "doctor"}); err != nil {
+		t.Fatalf("remote doctor: %v", err)
+	}
+	if !strings.Contains(doctorOut.String(), `"health": "ok"`) || strings.Contains(doctorOut.String(), `"db_path"`) {
+		t.Fatalf("remote doctor output = %s", doctorOut.String())
+	}
+	for _, args := range [][]string{
+		{"--config", configPath, "--json", "remote", "status"},
+		{"--config", configPath, "--json", "remote", "archives"},
+		{"--config", configPath, "--json", "remote", "whoami"},
+		{"--config", configPath, "--json", "whoami"},
+	} {
+		app := New()
+		var out bytes.Buffer
+		app.Stdout = &out
+		if err := app.Run(ctx, args); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+}
+
+func TestCloudPublishSendsLocalRows(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	dbPath := filepath.Join(dir, "gitcrawl.db")
+	cfg := config.Default()
+	cfg.DBPath = dbPath
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	seedCommandFlowStore(t, dbPath)
+
+	tokenEnv := "GITCRAWL_TEST_PUBLISH_TOKEN"
+	t.Setenv(tokenEnv, "publish-token")
+	seenTables := map[string]crawlremote.IngestRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("authorization"); got != "Bearer publish-token" {
+			http.Error(w, "missing bearer", http.StatusUnauthorized)
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.EscapedPath() != "/v1/apps/gitcrawl/archives/gitcrawl%2Fopenclaw__openclaw/ingest" {
+			http.NotFound(w, r)
+			return
+		}
+		var body crawlremote.IngestRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if body.Manifest.App != "gitcrawl" || body.Manifest.Archive != "gitcrawl/openclaw__openclaw" {
+			http.Error(w, "manifest mismatch", http.StatusBadRequest)
+			return
+		}
+		seenTables[body.Table] = body
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(crawlremote.IngestResult{Table: body.Table, RowsAccepted: int64(len(body.Rows)), Complete: body.Final})
+	}))
+	defer server.Close()
+
+	app := New()
+	var out bytes.Buffer
+	app.Stdout = &out
+	if err := app.Run(ctx, []string{
+		"--config", cfgPath,
+		"cloud", "publish",
+		"--remote", server.URL,
+		"--archive", "gitcrawl/openclaw__openclaw",
+		"--token-env", tokenEnv,
+		"--json",
+	}); err != nil {
+		t.Fatalf("cloud publish: %v", err)
+	}
+
+	if len(seenTables) != 2 {
+		t.Fatalf("tables = %v, want repositories and threads", seenTables)
+	}
+	if got := len(seenTables["repositories"].Rows); got != 1 {
+		t.Fatalf("repositories rows = %d, want 1", got)
+	}
+	if got := len(seenTables["threads"].Rows); got != 3 {
+		t.Fatalf("threads rows = %d, want 3", got)
+	}
+	if !seenTables["threads"].Final {
+		t.Fatalf("threads batch should finish ingest")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("decode output: %v\n%s", err, out.String())
+	}
+	if payload["repositories"] != float64(1) || payload["threads"] != float64(3) {
+		t.Fatalf("unexpected output: %#v", payload)
+	}
+}
+
+func TestRemoteLoginStoresKeyringToken(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	keyring.MockInit()
+
+	var pollSecretHash string
+	var pollSecret string
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		switch r.URL.Path {
+		case "/v1/auth/github/start":
+			var req crawlremote.LoginStartRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			pollSecretHash = req.PollSecretHash
+			_ = json.NewEncoder(w).Encode(crawlremote.LoginStartResult{LoginID: "login-1", URL: server.URL + "/authorize"})
+		case "/v1/auth/github/poll":
+			var req crawlremote.LoginPollRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if req.LoginID != "login-1" {
+				http.Error(w, "wrong login", http.StatusBadRequest)
+				return
+			}
+			pollSecret = req.PollSecret
+			_ = json.NewEncoder(w).Encode(crawlremote.LoginPollResult{Status: "complete", Token: "session-token", Org: "openclaw", Login: "alice"})
+		case "/v1/whoami":
+			if r.Header.Get("authorization") != "Bearer session-token" {
+				http.Error(w, "missing session token", http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(crawlremote.Identity{Owner: "openclaw", Org: "openclaw", Login: "alice", Auth: "github"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(dir, "config.toml")
+	app := New()
+	var out bytes.Buffer
+	app.Stdout = &out
+	if err := app.Run(ctx, []string{
+		"--config", configPath,
+		"--json",
+		"remote", "login",
+		"--endpoint", server.URL,
+		"--no-browser",
+		"--timeout", "1s",
+		"--poll-interval", "1ms",
+	}); err != nil {
+		t.Fatalf("remote login: %v", err)
+	}
+	if pollSecretHash == "" || pollSecret == "" || crawlremote.LoginPollSecretHash(pollSecret) != pollSecretHash {
+		t.Fatalf("poll secret/hash not linked: secret=%q hash=%q", pollSecret, pollSecretHash)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Remote.Auth.TokenSource != "keyring" || cfg.Remote.Auth.KeyringService == "" || cfg.Remote.Auth.KeyringAccount == "" {
+		t.Fatalf("remote auth = %#v", cfg.Remote.Auth)
+	}
+	stored, err := keyring.Get(cfg.Remote.Auth.KeyringService, cfg.Remote.Auth.KeyringAccount)
+	if err != nil {
+		t.Fatalf("keyring get: %v", err)
+	}
+	if stored != "session-token" {
+		t.Fatalf("stored token = %q", stored)
+	}
+
+	whoami := New()
+	var whoamiOut bytes.Buffer
+	whoami.Stdout = &whoamiOut
+	if err := whoami.Run(ctx, []string{"--config", configPath, "--json", "whoami"}); err != nil {
+		t.Fatalf("whoami: %v", err)
+	}
+	if !strings.Contains(whoamiOut.String(), `"login": "alice"`) {
+		t.Fatalf("whoami output = %s", whoamiOut.String())
+	}
+}
+
+func TestRemoteLoginWithGitHubTokenEnvStoresKeyringToken(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	keyring.MockInit()
+	t.Setenv("GITCRAWL_TEST_GITHUB_TOKEN", "github-token")
+
+	var sawToken string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		switch r.URL.Path {
+		case "/v1/auth/github/token":
+			var req crawlremote.GitHubTokenLoginRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			sawToken = req.Token
+			_ = json.NewEncoder(w).Encode(crawlremote.LoginPollResult{Status: "complete", Token: "session-token", Org: "openclaw", Login: "alice"})
+		case "/v1/whoami":
+			if r.Header.Get("authorization") != "Bearer session-token" {
+				http.Error(w, "missing session token", http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(crawlremote.Identity{Owner: "openclaw", Org: "openclaw", Login: "alice", Auth: "github"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	configPath := filepath.Join(dir, "config.toml")
+	app := New()
+	var out bytes.Buffer
+	app.Stdout = &out
+	if err := app.Run(ctx, []string{
+		"--config", configPath,
+		"--json",
+		"remote", "login",
+		"--endpoint", server.URL,
+		"--github-token-env", "GITCRAWL_TEST_GITHUB_TOKEN",
+	}); err != nil {
+		t.Fatalf("remote login: %v", err)
+	}
+	if sawToken != "github-token" {
+		t.Fatalf("github token = %q", sawToken)
+	}
+	if !strings.Contains(out.String(), `"login_method": "github-token"`) {
+		t.Fatalf("login output = %s", out.String())
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	stored, err := keyring.Get(cfg.Remote.Auth.KeyringService, cfg.Remote.Auth.KeyringAccount)
+	if err != nil {
+		t.Fatalf("keyring get: %v", err)
+	}
+	if stored != "session-token" {
+		t.Fatalf("stored token = %q", stored)
+	}
+
+	whoami := New()
+	var whoamiOut bytes.Buffer
+	whoami.Stdout = &whoamiOut
+	if err := whoami.Run(ctx, []string{"--config", configPath, "--json", "whoami"}); err != nil {
+		t.Fatalf("whoami: %v", err)
+	}
+	if !strings.Contains(whoamiOut.String(), `"login": "alice"`) {
+		t.Fatalf("whoami output = %s", whoamiOut.String())
 	}
 }
 
@@ -165,7 +539,7 @@ func TestMetadataStatusAndControlStatusJSON(t *testing.T) {
 	if !strings.Contains(helpOut.String(), "cluster browser") {
 		t.Fatalf("tui help output = %q", helpOut.String())
 	}
-	for _, topic := range []string{"metadata", "status", "init", "configure", "doctor", "sync", "refresh", "embed", "threads", "search", "cluster", "clusters", "clusters-report", "durable-clusters", "cluster-detail", "cluster-explain", "neighbors", "runs", "close-thread", "reopen-thread", "close-cluster", "reopen-cluster", "exclude-cluster-member", "include-cluster-member", "set-cluster-canonical", "gh"} {
+	for _, topic := range []string{"metadata", "status", "remote", "whoami", "init", "configure", "doctor", "sync", "refresh", "embed", "threads", "search", "cluster", "clusters", "clusters-report", "durable-clusters", "cluster-detail", "cluster-explain", "neighbors", "runs", "close-thread", "reopen-thread", "close-cluster", "reopen-cluster", "exclude-cluster-member", "include-cluster-member", "set-cluster-canonical", "gh"} {
 		helpOut.Reset()
 		if err := help.printCommandUsage(topic); err != nil {
 			t.Fatalf("%s help: %v", topic, err)
