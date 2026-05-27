@@ -88,8 +88,12 @@ func (a *App) execRealGHMaybeCached(ctx context.Context, args []string, controls
 		}
 	}
 
-	stdout, stderr, exitCode, err := a.captureRealGH(ctx, args)
-	_ = a.incrementGHXCacheBackendMiss(args)
+	stdout, stderr, exitCode, err, fromWeb := a.captureGHWebOrReal(ctx, args, controls)
+	if fromWeb {
+		_ = a.incrementGHXCacheCounter("web_hits")
+	} else {
+		_ = a.incrementGHXCacheBackendMiss(args)
+	}
 	if err != nil && hasStaleEntry && ghCommandCacheEntryCanServeStale(staleEntry, ttl) && ghCommandOutputLooksRateLimited(stdout, stderr) {
 		_ = a.incrementGHXCacheCounter("stale_hits")
 		_, _ = fmt.Fprintf(a.Stderr, "gitcrawl: GitHub rate limited; serving stale cached gh response from %s ago\n", time.Since(staleEntry.CreatedAt).Round(time.Second))
@@ -158,8 +162,22 @@ func (a *App) execRealGHAPIProjectionMaybeCached(ctx context.Context, originalAr
 		}
 	}
 
-	stdout, stderr, exitCode, err := a.captureRealGH(ctx, rawArgs)
-	_ = a.incrementGHXCacheBackendMiss(rawArgs)
+	if projectedOut, projectedErr, projectErr, ok := a.captureGHWebAPIProjection(ctx, rawArgs, jqExpr, controls); ok {
+		_ = a.incrementGHXCacheCounter("web_hits")
+		if projectErr != nil {
+			return a.execRealGHMaybeCachedWithoutProjection(ctx, originalArgs, cacheDir, controls)
+		}
+		_, _ = io.WriteString(a.Stdout, projectedOut)
+		_, _ = io.WriteString(a.Stderr, projectedErr)
+		return nil
+	}
+
+	stdout, stderr, exitCode, err, fromWeb := a.captureGHWebOrReal(ctx, rawArgs, controls)
+	if fromWeb {
+		_ = a.incrementGHXCacheCounter("web_hits")
+	} else {
+		_ = a.incrementGHXCacheBackendMiss(rawArgs)
+	}
 	if err != nil && hasStaleEntry && ghCommandCacheEntryCanServeStale(staleEntry, ttl) && ghCommandOutputLooksRateLimited(stdout, stderr) {
 		_ = a.incrementGHXCacheCounter("stale_hits")
 		_, _ = fmt.Fprintf(a.Stderr, "gitcrawl: GitHub rate limited; serving stale cached gh response from %s ago\n", time.Since(staleEntry.CreatedAt).Round(time.Second))
@@ -219,8 +237,12 @@ func (a *App) execRealGHMaybeCachedWithoutProjection(ctx context.Context, args [
 			}
 		}
 	}
-	stdout, stderr, exitCode, err := a.captureRealGH(ctx, args)
-	_ = a.incrementGHXCacheBackendMiss(args)
+	stdout, stderr, exitCode, err, fromWeb := a.captureGHWebOrReal(ctx, args, controls)
+	if fromWeb {
+		_ = a.incrementGHXCacheCounter("web_hits")
+	} else {
+		_ = a.incrementGHXCacheBackendMiss(args)
+	}
 	if err != nil && hasStaleEntry && ghCommandCacheEntryCanServeStale(staleEntry, ttl) && ghCommandOutputLooksRateLimited(stdout, stderr) {
 		_ = a.incrementGHXCacheCounter("stale_hits")
 		_, _ = fmt.Fprintf(a.Stderr, "gitcrawl: GitHub rate limited; serving stale cached gh response from %s ago\n", time.Since(staleEntry.CreatedAt).Round(time.Second))
