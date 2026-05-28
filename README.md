@@ -1,3 +1,5 @@
+![gitcrawl banner](docs/assets/readme-banner.jpg)
+
 # gitcrawl
 
 <img width="1797" height="1096" alt="Screenshot 2026-04-30 at 00 45 36" src="https://github.com/user-attachments/assets/54a0a6cf-5862-451d-9552-5d18656976ff" />
