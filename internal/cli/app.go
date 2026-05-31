@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2999,31 +3000,62 @@ func gitConfigValue(ctx context.Context, dir, key string) (string, error) {
 }
 
 func runGit(ctx context.Context, workdir string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = workdir
-	cmd.Env = append(os.Environ(),
-		"GIT_TERMINAL_PROMPT=0",
-		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10",
-	)
-	out, err := cmd.CombinedOutput()
+	out, err := runGitCommandOutput(ctx, workdir, args...)
 	if err != nil {
-		return fmt.Errorf("git %s failed: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("git %s failed: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(out))
 	}
 	return nil
 }
 
-func gitOutput(ctx context.Context, workdir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+func runGitCommandOutput(ctx context.Context, workdir string, args ...string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	cmd := exec.Command("git", args...)
 	cmd.Dir = workdir
 	cmd.Env = append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10",
 	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s failed: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	configureCommandGroup(cmd)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Start(); err != nil {
+		cleanupCommandGroup(cmd)
+		return out.String(), err
 	}
-	return strings.TrimSpace(string(out)), nil
+	if err := attachCommandGroup(cmd); err != nil {
+		killCommandGroup(cmd)
+		_ = cmd.Wait()
+		cleanupCommandGroup(cmd)
+		return out.String(), err
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	select {
+	case err := <-done:
+		cleanupCommandGroup(cmd)
+		return out.String(), err
+	case <-ctx.Done():
+		killCommandGroup(cmd)
+		err := <-done
+		cleanupCommandGroup(cmd)
+		if err == nil {
+			err = ctx.Err()
+		}
+		return out.String(), fmt.Errorf("%w: %v", ctx.Err(), err)
+	}
+}
+
+func gitOutput(ctx context.Context, workdir string, args ...string) (string, error) {
+	out, err := runGitCommandOutput(ctx, workdir, args...)
+	if err != nil {
+		return "", fmt.Errorf("git %s failed: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(out))
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func (a *App) runDoctor(ctx context.Context, args []string) error {
@@ -3059,6 +3091,7 @@ func (a *App) runDoctor(ctx context.Context, args []string) error {
 	sourceHealth := sqliteDBHealth(ctx, cfg.DBPath, cfg.DBPath)
 	runtimeHealth := map[string]any{}
 	portableStoreStatus := map[string]any{}
+	portableRefreshState := map[string]any{}
 	repairAction := ""
 	rt, err := a.openLocalRuntimeReadOnly(ctx)
 	if err != nil {
@@ -3072,6 +3105,7 @@ func (a *App) runDoctor(ctx context.Context, args []string) error {
 			runtimeHealth = sqliteDBHealth(ctx, rt.Config.DBPath, rt.SourceDBPath)
 			portableStoreStatus = portableStoreGitStatus(ctx, rt.SourceDBPath)
 			state := readPortableStoreRefreshState(portableStoreRefreshStatePath(rt.Config.DBPath))
+			portableRefreshState = portableRefreshStatePayload(state)
 			repairAction = state.LastRepair
 			if repairAction == "" {
 				repairAction = "none"
@@ -3094,6 +3128,7 @@ func (a *App) runDoctor(ctx context.Context, args []string) error {
 		"source_db_health":      sourceHealth,
 		"runtime_db_health":     runtimeHealth,
 		"portable_store_status": portableStoreStatus,
+		"portable_refresh":      portableRefreshState,
 		"repair_action":         repairAction,
 		"github_token_present":  githubToken.Value != "",
 		"github_token_source":   githubToken.Source,
@@ -3109,6 +3144,35 @@ func (a *App) runDoctor(ctx context.Context, args []string) error {
 		"embedding_basis":       cfg.EmbeddingBasis,
 		"api_supported":         false,
 	}, true)
+}
+
+func portableRefreshStatePayload(state portableStoreRefreshState) map[string]any {
+	out := map[string]any{}
+	if state.LastAttempt != "" {
+		out["last_attempt"] = state.LastAttempt
+	}
+	if state.LastSuccess != "" {
+		out["last_success"] = state.LastSuccess
+	}
+	if state.LastFailure != "" {
+		out["last_failure"] = state.LastFailure
+	}
+	if state.Error != "" {
+		out["error"] = state.Error
+	}
+	if state.LastRepair != "" {
+		out["last_repair"] = state.LastRepair
+	}
+	if state.LastRepairAt != "" {
+		out["last_repair_at"] = state.LastRepairAt
+	}
+	if state.LastRepairBackup != "" {
+		out["last_repair_backup"] = state.LastRepairBackup
+	}
+	if state.LastRepairError != "" {
+		out["last_repair_error"] = state.LastRepairError
+	}
+	return out
 }
 
 func (a *App) runRemoteDoctor(ctx context.Context, cfg config.Config, configExists bool) error {
