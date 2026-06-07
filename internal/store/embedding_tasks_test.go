@@ -90,6 +90,17 @@ func TestEmbeddingTextForBasisCapsLongInputs(t *testing.T) {
 	}
 }
 
+func TestTitleOriginalEmbeddingPrefersCanonicalDocumentText(t *testing.T) {
+	rawText := "# Refresh cache\n\nOriginal body\n\nChanged files:\n- internal/cache/store.go\n\nCommits:\n- fix: refresh manifest"
+	text, err := embeddingTextForBasis("title_original", "Refresh cache", "Original body", rawText, "", "")
+	if err != nil {
+		t.Fatalf("embedding text: %v", err)
+	}
+	if text != rawText {
+		t.Fatalf("embedding text = %q, want canonical document", text)
+	}
+}
+
 func TestEmbeddingTextForBasisCapsTokenDenseInputsByBytes(t *testing.T) {
 	body := strings.Repeat("界", MaxEmbeddingTextRunes)
 	text, meta, err := embeddingTextForBasisWithMeta("title_original", "oversized unicode", body, "", "", "")
@@ -126,6 +137,17 @@ func TestEmbeddingContentHashVersionTracksCurrentInputCaps(t *testing.T) {
 	}
 	if strings.Contains(material, "max_runes=24000") {
 		t.Fatal("embedding hash material still carries stale 24000 rune cap")
+	}
+}
+
+func TestSupportsEmbeddingBasis(t *testing.T) {
+	for _, basis := range []string{"", "title_original", "dedupe_text", "llm_key_summary"} {
+		if !SupportsEmbeddingBasis(basis) {
+			t.Fatalf("supported basis rejected: %q", basis)
+		}
+	}
+	if SupportsEmbeddingBasis("missing") {
+		t.Fatal("unsupported basis accepted")
 	}
 }
 
