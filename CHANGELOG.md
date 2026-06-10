@@ -1,22 +1,20 @@
 # Changelog
 
-## 0.4.6 - Unreleased
+## 0.6.0 - 2026-06-11
 
 - Update `crawlkit` to v0.12.0.
 - Add configurable `vector_backend` selection for semantic search and neighbors, including optional Python `turbovec` support when embedding dimensions are divisible by 8, thanks @vincentkoc.
-- Add Cloudflare remote archive scaffolding with `[remote]` config, `gitcrawl init --remote`, GitHub-backed `remote login` with OAuth or token-env bootstrap, remote identity/archive/status commands, cloud-mode search against Worker named queries, and `gitcrawl cloud publish` ingestion without creating a local SQLite database for readers.
-- Mirror the local SQLite archive into the Worker-backed R2 object store during
-  `gitcrawl cloud publish`, alongside the D1 row ingest used for live queries.
-- Compress the mirrored SQLite archive as a gzip chunk bundle with a manifest
-  so R2 bootstrap/fallback data is smaller and can grow past single-object
-  upload limits.
-- Move the `gitcrawl gh` compatibility cache to Octopool with a hard migration error that points users at `octopool login` and `octopool gh ...`.
-- Add an optional TUI focus layout, configurable with `gitcrawl tui --layout focus`, `tui.default_layout`, or `GITCRAWL_TUI_LAYOUT`, thanks @RomneyDa.
-- Add `gitcrawl clusters-report` for Markdown or JSON cluster triage reports, thanks @RomneyDa.
-- Add extra regression coverage for TUI detail-pane keyboard and wheel scrolling, thanks @RomneyDa.
+- Mirror the local SQLite archive into the Worker-backed R2 object store during `gitcrawl cloud publish`, then compress it as a gzip chunk bundle with a manifest so fallback/bootstrap data is smaller and can grow past single-object upload limits.
 - Bound portable-store Git subprocess cancellation so stale fetch helpers cannot hang read-only commands, and expose the last portable refresh failure in `gitcrawl doctor --json`.
 - Backfill a missing or stale source embedding for `gitcrawl neighbors` with a one-row capped embedding request, and show the exact cheap `gitcrawl embed --number ... --limit 1` recovery command when no OpenAI key is configured.
 - Add PR-aware thread indexing for changed paths and commit subjects, plus `gitcrawl code index` and `search --scope code|all` for bounded local full-text search over tracked monorepo source files.
+
+## 0.5.0 - 2026-05-27
+
+- Add Cloudflare remote archive scaffolding with `[remote]` config, `gitcrawl init --remote`, GitHub-backed `remote login` with OAuth or token-env bootstrap, remote identity/archive/status commands, cloud-mode search against Worker named queries, and `gitcrawl cloud publish` ingestion without creating a local SQLite database for readers.
+- Add `gh` web fallback reads and move the `gitcrawl gh` compatibility cache to Octopool, with a migration error that points users at `octopool login` and `octopool gh ...`.
+- Add an optional TUI focus layout, configurable with `gitcrawl tui --layout focus`, `tui.default_layout`, or `GITCRAWL_TUI_LAYOUT`, thanks @RomneyDa.
+- Add `gitcrawl clusters-report` for Markdown or JSON cluster triage reports, and restore TUI detail-pane keyboard and wheel scrolling, thanks @RomneyDa.
 
 ## 0.4.5 - 2026-05-23
 
