@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.1 - Unreleased
+## 0.6.1 - 2026-06-19
 
 - Use platform-native default config, data, cache, and log paths for new installs while preserving existing `~/.config/gitcrawl` installs until the new platform path exists; macOS uses Application Support and Caches, while Linux continues to honor XDG base directory variables, thanks @joshka.
 - Update `crawlkit` to v0.12.2 for Windows SQLite path support and security hardening; bearer-authenticated non-local remote endpoints now require HTTPS, while loopback HTTP remains supported for local development.
