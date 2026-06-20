@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.6.3 - Unreleased
+
 ## 0.6.2 - 2026-06-19
 
 - Use CrawlKit's shared safe tokenized FTS5 query and SQL LIKE builders, treating `%`, `_`, and backslashes literally in fallback searches, and update CrawlKit to v0.13.0.
