@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.6.2 - Unreleased
+## 0.6.2 - 2026-06-19
 
-- Use CrawlKit's shared safe tokenized FTS5 query and SQL LIKE builders, treating `%`, `_`, and backslashes literally in fallback searches, and refresh dependencies.
+- Use CrawlKit's shared safe tokenized FTS5 query and SQL LIKE builders, treating `%`, `_`, and backslashes literally in fallback searches, and update CrawlKit to v0.13.0.
 - Preserve duplicate PR file entries returned by GitHub, including removed and added files sharing one path, as position-keyed snapshots. Thanks @joshka.
 - Add `gitcrawl init --runtime-dir` for fully isolated temporary database, cache, vector, and log paths. Thanks @joshka.
 
