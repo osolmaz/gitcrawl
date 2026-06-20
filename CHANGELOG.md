@@ -3,7 +3,6 @@
 ## 0.6.2 - Unreleased
 
 - Use CrawlKit's shared safe tokenized FTS5 query and SQL LIKE builders, treating `%`, `_`, and backslashes literally in fallback searches, and refresh dependencies.
-
 ## 0.6.1 - 2026-06-19
 
 - Use platform-native default config, data, cache, and log paths for new installs while preserving existing `~/.config/gitcrawl` installs until the new platform path exists; macOS uses Application Support and Caches, while Linux continues to honor XDG base directory variables, thanks @joshka.
