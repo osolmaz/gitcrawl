@@ -88,6 +88,9 @@ func queryTurboVec(ctx context.Context, items []Item, query []float64, opts Quer
 	if opts.Limit <= 0 {
 		opts.Limit = 20
 	}
+	if err := validateExactQuery(query); err != nil {
+		return nil, err
+	}
 	candidateCount := 0
 	for _, item := range items {
 		if item.ThreadID == opts.ExcludeThreadID {

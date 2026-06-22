@@ -117,12 +117,14 @@ func (a *App) runCloudPublish(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	sqliteBundlePrivacy := gitcrawlCloudSQLiteBundlePrivacy()
 	return a.writeOutput("cloud publish", map[string]any{
-		"remote":        strings.TrimRight(endpoint, "/"),
-		"archive":       archiveID,
-		"repositories":  repoAccepted,
-		"threads":       threadAccepted,
-		"sqlite_bundle": sqliteBundle,
+		"remote":                strings.TrimRight(endpoint, "/"),
+		"archive":               archiveID,
+		"repositories":          repoAccepted,
+		"threads":               threadAccepted,
+		"sqlite_bundle":         sqliteBundle,
+		"sqlite_bundle_privacy": sqliteBundlePrivacy,
 	}, true)
 }
 
@@ -208,11 +210,7 @@ func uploadSQLiteArchive(ctx context.Context, client *crawlremote.Client, app, a
 		SourcePath: snapshotPath,
 		ChunkSize:  gitcrawlCloudSQLiteBundleChunkSize,
 		Counts:     counts,
-		Privacy: map[string]any{
-			"includes_private_messages": false,
-			"includes_raw_json":         false,
-			"includes_source_code":      false,
-		},
+		Privacy:    gitcrawlCloudSQLiteBundlePrivacy(),
 	})
 	if err != nil {
 		return nil, err
@@ -223,6 +221,14 @@ func uploadSQLiteArchive(ctx context.Context, client *crawlremote.Client, app, a
 		return nil, err
 	}
 	return result.Bundle, nil
+}
+
+func gitcrawlCloudSQLiteBundlePrivacy() map[string]any {
+	return map[string]any{
+		"includes_private_messages": true,
+		"includes_raw_json":         false,
+		"includes_source_code":      false,
+	}
 }
 
 func cloudSQLiteSnapshotPath(ctx context.Context, db *sql.DB, dbPath string) (string, func(), error) {

@@ -16,6 +16,7 @@ test:
 test-coverage:
 	go test ./... -covermode=atomic -coverprofile=coverage.out
 	@total="$$(go tool cover -func=coverage.out | awk '/^total:/ { sub(/%/, "", $$3); print $$3 }')"; \
+	if [ -z "$$total" ]; then echo "could not parse total coverage" >&2; exit 1; fi; \
 	echo "total coverage: $${total}%"; \
 	awk -v total="$$total" 'BEGIN { if (total + 0 < 85.0) { printf("coverage %.1f%% is below 85.0%%\n", total); exit 1 } }'
 

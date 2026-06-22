@@ -108,6 +108,19 @@ func TestQueryWithOptionsExactRejectsInvalidQuery(t *testing.T) {
 	}
 }
 
+func TestQueryWithOptionsTurboVecRejectsInvalidQuery(t *testing.T) {
+	t.Setenv("CRAWLKIT_TEST_TURBOVEC_HELPER", "1")
+	_, err := QueryWithOptions(context.Background(), []Item{{ThreadID: 1, Vector: []float64{1, 0}}}, []float64{math.NaN(), 0}, QueryOptions{
+		Backend: "turbovec",
+		TurboVec: crawlvector.TurboVecOptions{
+			Command: []string{os.Args[0], "-test.run=TestTurboVecHelperProcess", "--"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "query vector contains non-finite value") {
+		t.Fatalf("nan query err = %v", err)
+	}
+}
+
 func TestQueryWithTurboVecFallsBackToExactWhenRequestIsTooLarge(t *testing.T) {
 	got, err := QueryWithOptions(context.Background(), []Item{
 		{ThreadID: 1, Vector: []float64{1, 0, 0, 0, 0, 0, 0, 0}},

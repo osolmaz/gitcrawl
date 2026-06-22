@@ -621,6 +621,10 @@ func TestCloudPublishSendsLocalRows(t *testing.T) {
 					http.Error(w, "bad manifest", http.StatusBadRequest)
 					return
 				}
+				if manifest.Privacy["includes_private_messages"] != true {
+					http.Error(w, "bundle privacy should disclose message bodies", http.StatusBadRequest)
+					return
+				}
 				_ = json.NewEncoder(w).Encode(crawlremote.SQLiteBundleUploadResult{
 					App:      "gitcrawl",
 					Archive:  "gitcrawl/openclaw__openclaw",
@@ -689,6 +693,10 @@ func TestCloudPublishSendsLocalRows(t *testing.T) {
 	}
 	if payload["sqlite_bundle"] == nil {
 		t.Fatalf("missing sqlite bundle output: %#v", payload)
+	}
+	privacy, ok := payload["sqlite_bundle_privacy"].(map[string]any)
+	if !ok || privacy["includes_private_messages"] != true {
+		t.Fatalf("missing sqlite bundle privacy output: %#v", payload)
 	}
 }
 
