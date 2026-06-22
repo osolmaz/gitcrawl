@@ -3301,7 +3301,6 @@ func (a *App) runDoctor(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		storeStatus.DBPath = cfg.DBPath
 	}
 
 	githubToken := a.resolveGitHubToken(ctx, cfg)
