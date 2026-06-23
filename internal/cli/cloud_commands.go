@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -161,13 +162,7 @@ func publishRows(ctx context.Context, db *sql.DB, query string, mapRow func([]an
 func sendIngestRows(ctx context.Context, client *crawlremote.Client, app, archive string, manifest crawlremote.IngestManifest, table string, columns []string, rows [][]any, final bool) (int64, error) {
 	var total int64
 	if len(rows) == 0 {
-		result, err := client.Ingest(ctx, app, archive, crawlremote.IngestRequest{
-			Manifest: manifest,
-			Table:    table,
-			Columns:  columns,
-			Rows:     [][]any{},
-			Final:    final,
-		})
+		result, err := sendIngestBatch(ctx, client, app, archive, manifest, table, columns, [][]any{}, 0, final)
 		return result.RowsAccepted, err
 	}
 	for start := 0; start < len(rows); start += gitcrawlCloudBatchSize {
@@ -175,20 +170,63 @@ func sendIngestRows(ctx context.Context, client *crawlremote.Client, app, archiv
 		if end > len(rows) {
 			end = len(rows)
 		}
-		result, err := client.Ingest(ctx, app, archive, crawlremote.IngestRequest{
-			Manifest: manifest,
-			Table:    table,
-			Columns:  columns,
-			Rows:     rows[start:end],
-			Cursor:   cursorFor(start),
-			Final:    final && end == len(rows),
-		})
+		result, err := sendIngestBatch(ctx, client, app, archive, manifest, table, columns, rows[start:end], start, final && end == len(rows))
 		if err != nil {
 			return total, err
 		}
 		total += result.RowsAccepted
 	}
 	return total, nil
+}
+
+func sendIngestBatch(ctx context.Context, client *crawlremote.Client, app, archive string, manifest crawlremote.IngestManifest, table string, columns []string, rows [][]any, cursor int, final bool) (crawlremote.IngestResult, error) {
+	for {
+		result, err := client.Ingest(ctx, app, archive, crawlremote.IngestRequest{
+			Manifest: manifest,
+			Table:    table,
+			Columns:  columns,
+			Rows:     rows,
+			Cursor:   cursorFor(cursor),
+			Final:    final,
+		})
+		if err == nil {
+			if result.ResetIncomplete {
+				if err := drainIngestReset(ctx, client, app, archive, manifest, table, columns); err != nil {
+					return crawlremote.IngestResult{}, err
+				}
+				continue
+			}
+			return result, nil
+		}
+		if !isResetIncomplete(err) {
+			return crawlremote.IngestResult{}, err
+		}
+		if err := drainIngestReset(ctx, client, app, archive, manifest, table, columns); err != nil {
+			return crawlremote.IngestResult{}, err
+		}
+	}
+}
+
+func drainIngestReset(ctx context.Context, client *crawlremote.Client, app, archive string, manifest crawlremote.IngestManifest, table string, columns []string) error {
+	for {
+		result, err := client.Ingest(ctx, app, archive, crawlremote.IngestRequest{
+			Manifest: manifest,
+			Table:    table,
+			Columns:  columns,
+			Rows:     [][]any{},
+		})
+		if err != nil {
+			return err
+		}
+		if !result.ResetIncomplete {
+			return nil
+		}
+	}
+}
+
+func isResetIncomplete(err error) bool {
+	var remoteErr *crawlremote.Error
+	return errors.As(err, &remoteErr) && remoteErr.Code == "reset_incomplete"
 }
 
 func cursorFor(start int) string {

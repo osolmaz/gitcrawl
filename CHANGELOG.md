@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.6.4 - Unreleased
+## 0.6.4 - 2026-06-23
+
+- Drain large Cloudflare D1 table resets before sending row batches so `gitcrawl cloud publish` can tolerate bounded Worker resets.
 
 ## 0.6.3 - 2026-06-23
 

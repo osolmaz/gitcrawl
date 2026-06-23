@@ -160,6 +160,62 @@ func TestSendIngestRowsBatchesAndFinalizes(t *testing.T) {
 	}
 }
 
+func TestSendIngestRowsDrainsRemoteResetBeforeRetry(t *testing.T) {
+	ctx := context.Background()
+	var requests []crawlremote.IngestRequest
+	resetCalls := 0
+	rejectedFirstBatch := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/v1/apps/gitcrawl/archives/gitcrawl%2Fopenclaw/ingest" {
+			http.NotFound(w, r)
+			return
+		}
+		var body crawlremote.IngestRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		if len(body.Rows) == 0 {
+			resetCalls++
+			_ = json.NewEncoder(w).Encode(crawlremote.IngestResult{ResetIncomplete: resetCalls == 1, ResetDeleted: 10000})
+			return
+		}
+		if body.Cursor == "" && !rejectedFirstBatch {
+			rejectedFirstBatch = true
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error":   "reset_incomplete",
+				"message": "archive table reset is still in progress",
+			})
+			return
+		}
+		requests = append(requests, body)
+		_ = json.NewEncoder(w).Encode(crawlremote.IngestResult{RowsAccepted: int64(len(body.Rows)), Complete: body.Final})
+	}))
+	defer server.Close()
+
+	client, err := crawlremote.NewClientFromConfig(crawlremote.Config{Endpoint: server.URL}, crawlremote.Options{
+		TokenProvider: crawlremote.StaticToken("publish-token"),
+	})
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	accepted, err := sendIngestRows(ctx, client, "gitcrawl", "gitcrawl/openclaw", crawlremote.IngestManifest{App: "gitcrawl"}, "threads", []string{"id"}, [][]any{{1}}, true)
+	if err != nil {
+		t.Fatalf("send ingest: %v", err)
+	}
+	if accepted != 1 {
+		t.Fatalf("accepted = %d", accepted)
+	}
+	if resetCalls != 2 {
+		t.Fatalf("resetCalls = %d", resetCalls)
+	}
+	if len(requests) != 1 || requests[0].Cursor != "" || !requests[0].Final {
+		t.Fatalf("data requests = %#v", requests)
+	}
+}
+
 func TestRemoteAndCloudCommandDispatchErrors(t *testing.T) {
 	app := New()
 	if err := app.runRemote(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "requires a subcommand") {
