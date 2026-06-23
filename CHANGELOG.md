@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.6.4 - Unreleased
+
 ## 0.6.3 - 2026-06-23
 
 - Compact portable thread label and assignee metadata during store pruning so `gitcrawl-store` refreshes keep GitHub archive payloads below GitHub blob limits.
