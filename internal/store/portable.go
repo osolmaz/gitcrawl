@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -15,23 +16,25 @@ type PortablePruneOptions struct {
 }
 
 type PortablePruneStats struct {
-	DBPath              string   `json:"db_path"`
-	ManifestPath        string   `json:"manifest_path,omitempty"`
-	SHA256              string   `json:"sha256,omitempty"`
-	BodyChars           int      `json:"body_chars"`
-	BytesBefore         int64    `json:"bytes_before"`
-	BytesAfter          int64    `json:"bytes_after"`
-	QuickCheck          string   `json:"quick_check,omitempty"`
-	ThreadsPruned       int64    `json:"threads_pruned"`
-	CommentsPruned      int64    `json:"comments_pruned"`
-	RepositoriesPruned  int64    `json:"repositories_pruned"`
-	RawJSONPruned       int64    `json:"raw_json_pruned"`
-	FingerprintsPruned  int64    `json:"fingerprints_pruned"`
-	DocumentsDeleted    int64    `json:"documents_deleted"`
-	DocumentsFTSRebuilt bool     `json:"documents_fts_rebuilt"`
-	DroppedTables       []string `json:"dropped_tables,omitempty"`
-	DroppedColumns      []string `json:"dropped_columns,omitempty"`
-	Vacuumed            bool     `json:"vacuumed"`
+	DBPath                   string   `json:"db_path"`
+	ManifestPath             string   `json:"manifest_path,omitempty"`
+	SHA256                   string   `json:"sha256,omitempty"`
+	BodyChars                int      `json:"body_chars"`
+	BytesBefore              int64    `json:"bytes_before"`
+	BytesAfter               int64    `json:"bytes_after"`
+	QuickCheck               string   `json:"quick_check,omitempty"`
+	ThreadsPruned            int64    `json:"threads_pruned"`
+	CommentsPruned           int64    `json:"comments_pruned"`
+	ThreadLabelsCompacted    int64    `json:"thread_labels_compacted"`
+	ThreadAssigneesCompacted int64    `json:"thread_assignees_compacted"`
+	RepositoriesPruned       int64    `json:"repositories_pruned"`
+	RawJSONPruned            int64    `json:"raw_json_pruned"`
+	FingerprintsPruned       int64    `json:"fingerprints_pruned"`
+	DocumentsDeleted         int64    `json:"documents_deleted"`
+	DocumentsFTSRebuilt      bool     `json:"documents_fts_rebuilt"`
+	DroppedTables            []string `json:"dropped_tables,omitempty"`
+	DroppedColumns           []string `json:"dropped_columns,omitempty"`
+	Vacuumed                 bool     `json:"vacuumed"`
 }
 
 func (s *Store) PrunePortablePayloads(ctx context.Context, options PortablePruneOptions) (PortablePruneStats, error) {
@@ -95,6 +98,12 @@ func (s *Store) PrunePortablePayloads(ctx context.Context, options PortablePrune
 		} else {
 			stats.CommentsPruned = rowsAffected(result)
 		}
+	}
+	if labels, assignees, err := s.compactPortableThreadMetadata(ctx); err != nil {
+		return stats, err
+	} else {
+		stats.ThreadLabelsCompacted = labels
+		stats.ThreadAssigneesCompacted = assignees
 	}
 	if pruned, err := s.clearPortableRawJSON(ctx); err != nil {
 		return stats, err
@@ -214,6 +223,102 @@ func (s *Store) canonicalizePortableSchema(ctx context.Context, bodyChars int, s
 		}
 	}
 	return nil
+}
+
+func (s *Store) compactPortableThreadMetadata(ctx context.Context) (int64, int64, error) {
+	if !s.hasColumn(ctx, "threads", "labels_json") || !s.hasColumn(ctx, "threads", "assignees_json") {
+		return 0, 0, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `select id, labels_json, assignees_json from threads order by id`)
+	if err != nil {
+		return 0, 0, fmt.Errorf("read portable thread metadata: %w", err)
+	}
+	type update struct {
+		id        int64
+		labels    string
+		assignees string
+	}
+	var updates []update
+	var labelsCompacted, assigneesCompacted int64
+	for rows.Next() {
+		var id int64
+		var labels, assignees string
+		if err := rows.Scan(&id, &labels, &assignees); err != nil {
+			_ = rows.Close()
+			return 0, 0, fmt.Errorf("scan portable thread metadata: %w", err)
+		}
+		nextLabels := compactPortableNameList(labels, "name")
+		nextAssignees := compactPortableNameList(assignees, "login")
+		if nextLabels == labels && nextAssignees == assignees {
+			continue
+		}
+		if nextLabels != labels {
+			labelsCompacted++
+		}
+		if nextAssignees != assignees {
+			assigneesCompacted++
+		}
+		updates = append(updates, update{id: id, labels: nextLabels, assignees: nextAssignees})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, 0, fmt.Errorf("read portable thread metadata rows: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, 0, fmt.Errorf("close portable thread metadata rows: %w", err)
+	}
+	if len(updates) == 0 {
+		return 0, 0, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("begin portable thread metadata compaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	stmt, err := tx.PrepareContext(ctx, `update threads set labels_json = ?, assignees_json = ? where id = ?`)
+	if err != nil {
+		return 0, 0, fmt.Errorf("prepare portable thread metadata compaction: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, update := range updates {
+		if _, err := stmt.ExecContext(ctx, update.labels, update.assignees, update.id); err != nil {
+			return 0, 0, fmt.Errorf("compact portable thread metadata: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, fmt.Errorf("commit portable thread metadata compaction: %w", err)
+	}
+	return labelsCompacted, assigneesCompacted, nil
+}
+
+func compactPortableNameList(raw, field string) string {
+	var values []any
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return raw
+	}
+	names := make([]string, 0, len(values))
+	for _, value := range values {
+		var name string
+		switch typed := value.(type) {
+		case string:
+			name = typed
+		case map[string]any:
+			name, _ = typed[field].(string)
+		default:
+			return raw
+		}
+		if name = strings.TrimSpace(name); name == "" {
+			return raw
+		}
+		names = append(names, name)
+	}
+	compact, err := json.Marshal(names)
+	if err != nil {
+		return raw
+	}
+	return string(compact)
 }
 
 func (s *Store) ensurePortableExcerptColumns(ctx context.Context, table string) error {

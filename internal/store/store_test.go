@@ -518,7 +518,7 @@ func TestPrunePortablePayloads(t *testing.T) {
 		insert into repositories(id, owner, name, full_name, raw_json, updated_at)
 		values(1, 'openclaw', 'gitcrawl', 'openclaw/gitcrawl', '{"id":1}', '2026-04-26T00:00:00Z');
 		insert into threads(id, repo_id, github_id, number, kind, state, title, body, html_url, labels_json, assignees_json, raw_json, content_hash, updated_at)
-		values(1, 1, '1', 1, 'pull_request', 'open', 'download stalls', 'abcdefghijklmnopqrstuvwxyz', 'https://github.com/openclaw/gitcrawl/pull/1', '[]', '[]', '{"body":"abcdefghijklmnopqrstuvwxyz"}', 'hash', '2026-04-26T00:00:00Z');
+		values(1, 1, '1', 1, 'pull_request', 'open', 'download stalls', 'abcdefghijklmnopqrstuvwxyz', 'https://github.com/openclaw/gitcrawl/pull/1', '[{"name":"bug","color":"d73a4a","url":"https://api.github.com/labels/bug"}]', '[{"login":"alice","avatar_url":"https://avatars.githubusercontent.com/u/1"}]', '{"body":"abcdefghijklmnopqrstuvwxyz"}', 'hash', '2026-04-26T00:00:00Z');
 		insert into comments(id, thread_id, github_id, comment_type, author_login, author_type, body, is_bot, raw_json, created_at_gh, updated_at_gh)
 		values(1, 1, 'c1', 'issue_comment', 'alice', 'User', 'comment abcdefghijklmnopqrstuvwxyz', 0, '{"body":"comment abcdefghijklmnopqrstuvwxyz"}', '2026-04-26T00:00:00Z', '2026-04-26T00:00:00Z');
 		insert into pull_request_details(thread_id, repo_id, number, base_sha, head_sha, additions, deletions, changed_files, raw_json, fetched_at, updated_at)
@@ -546,11 +546,11 @@ func TestPrunePortablePayloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prune: %v", err)
 	}
-	if stats.DocumentsDeleted != 1 || stats.FingerprintsPruned != 1 || stats.CommentsPruned != 1 || stats.RawJSONPruned == 0 {
+	if stats.DocumentsDeleted != 1 || stats.FingerprintsPruned != 1 || stats.CommentsPruned != 1 || stats.RawJSONPruned == 0 || stats.ThreadLabelsCompacted != 1 || stats.ThreadAssigneesCompacted != 1 {
 		t.Fatalf("unexpected stats: %#v", stats)
 	}
 
-	var bodyExcerpt, titleTokens, linkedRefs, buckets, features string
+	var bodyExcerpt, labelsJSON, assigneesJSON, titleTokens, linkedRefs, buckets, features string
 	if st.hasColumn(ctx, "repositories", "raw_json") {
 		t.Fatal("repositories.raw_json was not dropped")
 	}
@@ -562,6 +562,12 @@ func TestPrunePortablePayloads(t *testing.T) {
 	}
 	if err := st.DB().QueryRowContext(ctx, `select body_excerpt from threads where id = 1`).Scan(&bodyExcerpt); err != nil {
 		t.Fatalf("thread body excerpt: %v", err)
+	}
+	if err := st.DB().QueryRowContext(ctx, `select labels_json, assignees_json from threads where id = 1`).Scan(&labelsJSON, &assigneesJSON); err != nil {
+		t.Fatalf("thread metadata: %v", err)
+	}
+	if labelsJSON != `["bug"]` || assigneesJSON != `["alice"]` {
+		t.Fatalf("thread metadata not compacted: labels=%q assignees=%q", labelsJSON, assigneesJSON)
 	}
 	var bodyLength int
 	if err := st.DB().QueryRowContext(ctx, `select body_length from threads where id = 1`).Scan(&bodyLength); err != nil {
