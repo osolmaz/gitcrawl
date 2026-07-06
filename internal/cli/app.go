@@ -3373,6 +3373,7 @@ func (a *App) runDoctor(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	jsonOut := fs.Bool("json", false, "write JSON output")
+	locks := fs.Bool("locks", false, "include SQLite lock and process diagnostics")
 	if err := fs.Parse(normalizeCommandArgs(args, nil)); err != nil {
 		return usageErr(err)
 	}
@@ -3408,6 +3409,7 @@ func (a *App) runDoctor(ctx context.Context, args []string) error {
 	portableStoreStatus := map[string]any{}
 	portableRefreshState := map[string]any{}
 	repairAction := ""
+	lockDBPath := cfg.DBPath
 	runtimeOpenError := ""
 	var runtimeOpenFailure error
 	runtimeStatusError := ""
@@ -3422,6 +3424,7 @@ func (a *App) runDoctor(ctx context.Context, args []string) error {
 		}
 	} else {
 		defer rt.Store.Close()
+		lockDBPath = rt.Config.DBPath
 		sourceHealth = sqliteDBHealth(ctx, rt.SourceDBPath, rt.SourceDBPath)
 		sourceSchema = store.InspectSchema(ctx, rt.SourceDBPath)
 		dbSchema = sourceSchema
@@ -3486,6 +3489,9 @@ func (a *App) runDoctor(ctx context.Context, args []string) error {
 	}
 	if runtimeStatusError != "" {
 		payload["runtime_status_error"] = runtimeStatusError
+	}
+	if *locks {
+		payload["locks"] = sqliteLockDiagnostic(ctx, lockDBPath)
 	}
 	if err := a.writeOutput("doctor", payload, true); err != nil {
 		return err
@@ -4587,7 +4593,7 @@ Usage:
 	"doctor": `gitcrawl doctor checks config, token, and database readiness.
 
 Usage:
-  gitcrawl doctor [--json]
+  gitcrawl doctor [--json] [--locks]
 `,
 	"sync": `gitcrawl sync mirrors GitHub issue and pull request metadata.
 
