@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.7.1 - Unreleased
+
 ## 0.7.0 - 2026-07-06
 
 - Update CrawlKit to v0.13.3 for TOML recursion, panic, and deeply nested input hardening.
