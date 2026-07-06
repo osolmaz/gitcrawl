@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.5 - Unreleased
+## 0.7.0 - 2026-07-06
 
 - Update CrawlKit to v0.13.3 for TOML recursion, panic, and deeply nested input hardening.
 - Resolve relative `gitcrawl init` database, runtime, and portable-store filesystem paths before saving them so later SQLite commands open the intended files instead of failing on an invalid URI, and reject unsupported SQLite URI or in-memory `--db` values.
