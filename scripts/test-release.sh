@@ -106,4 +106,24 @@ fi
 
 grep -F -- '--identifier org.openclaw.gitcrawl' "$MOCK_CODESIGN_LOG" >/dev/null
 grep -F 'FWJYW4S8P8' "$MOCK_CODESIGN_LOG" >/dev/null
+
+release_workflow="$ROOT/.github/workflows/release-assets.yml"
+grep -F 'contents: write' "$release_workflow" >/dev/null
+grep -F "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)" "$release_workflow" >/dev/null
+grep -F "endsWith(github.workflow_ref, format('@refs/heads/{0}', github.event.repository.default_branch))" "$release_workflow" >/dev/null
+grep -F "github.event_name == 'release' && github.event.action == 'published'" "$release_workflow" >/dev/null
+# shellcheck disable=SC2016 # GitHub expression must remain literal.
+grep -F 'ref: ${{ github.event.repository.default_branch }}' "$release_workflow" >/dev/null
+grep -F 'persist-credentials: false' "$release_workflow" >/dev/null
+# shellcheck disable=SC2016 # GitHub expression must remain literal.
+[[ "$(grep -F -c 'GH_TOKEN: ${{ github.token }}' "$release_workflow")" == 1 ]]
+# shellcheck disable=SC2016 # jq expression must remain literal.
+grep -F 'tag_name == $tag and (.draft == ($draft == "true"))' "$release_workflow" >/dev/null
+grep -F 'Accept: application/octet-stream' "$release_workflow" >/dev/null
+grep -F 'unset GH_TOKEN GITHUB_TOKEN' "$release_workflow" >/dev/null
+if grep -F 'gh release download' "$release_workflow" >/dev/null; then
+  echo "release workflow cannot resolve draft assets through gh release download" >&2
+  exit 1
+fi
+
 echo "release script tests passed"
