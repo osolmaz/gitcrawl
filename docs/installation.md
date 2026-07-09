@@ -30,7 +30,8 @@ Homebrew installs the `gitcrawl` binary. GitHub CLI shim behavior moved to Octop
 
 ## Install from a GitHub release
 
-Each tagged release publishes archives for `darwin_amd64`, `darwin_arm64`, `linux_amd64`, and `linux_arm64` via [GoReleaser](https://github.com/openclaw/gitcrawl/blob/main/.goreleaser.yaml).
+Each GitHub release includes archives for `darwin_amd64`, `darwin_arm64`, `linux_amd64`, and `linux_arm64` built via [GoReleaser](https://github.com/openclaw/gitcrawl/blob/main/.goreleaser.yaml).
+Official macOS archives are signed as `org.openclaw.gitcrawl` by `Developer ID Application: OpenClaw Foundation (FWJYW4S8P8)`; local source and snapshot builds do not require signing credentials.
 
 ```bash
 # Replace VERSION and PLATFORM with the values you want.

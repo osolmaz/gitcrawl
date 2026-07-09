@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.7.1 - Unreleased
+## 0.7.1 - 2026-07-09
+
+- Add local, fail-closed packaging and independent verification for official macOS archives signed as `org.openclaw.gitcrawl` by `Developer ID Application: OpenClaw Foundation (FWJYW4S8P8)`, while keeping CI and cross-platform snapshots credential-free and non-publishing.
+- Require Go 1.26.5 for the standard-library TLS security fix and add a vulnerability scan to CI.
+- Update CrawlKit to the signed v0.13.4 patch release.
 
 ## 0.7.0 - 2026-07-06
 

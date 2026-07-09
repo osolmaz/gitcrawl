@@ -1,0 +1,49 @@
+name: Release Assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Draft or published release tag to verify"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify-macos-assets:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs-on: macos-15
+            arch: arm64
+          - runs-on: macos-15-intel
+            arch: amd64
+    runs-on: ${{ matrix.runs-on }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Download release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          version="${RELEASE_TAG#v}"
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir artifacts \
+            --pattern "gitcrawl_${version}_darwin_${{ matrix.arch }}.tar.gz" \
+            --pattern checksums.txt
+
+      - name: Verify Developer ID signature
+        shell: bash
+        run: ./scripts/verify-release.sh "$RELEASE_TAG" artifacts "${{ matrix.arch }}"
