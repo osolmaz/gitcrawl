@@ -1,9 +1,24 @@
 # Changelog
 
-## 0.8.1 - Unreleased
+## 0.8.1 - 2026-07-17
 
-- Require every official macOS release binary to pass hardened-runtime signing, Apple notarization, and independent Foundation and notarized-requirement verification before packaging.
-- Route embedding and semantic-search requests through a configurable embedding-only OpenAI-compatible endpoint while preserving the shared endpoint fallback. Thanks @larroy.
+### Highlights
+
+- Ship both official macOS architectures through hardened-runtime Foundation signing, Apple notarization, and independent post-packaging verification before release.
+- Route embedding and semantic-search traffic through an optional embedding-only OpenAI-compatible endpoint while preserving the shared endpoint fallback. Thanks @larroy.
+
+### macOS release integrity
+
+- Sign each Darwin target as a temporary candidate with the stable `org.openclaw.gitcrawl` requirement, hardened runtime, and trusted timestamp, replacing GoReleaser output only after notarization succeeds.
+- Submit every signed candidate in an ephemeral ZIP, require an accepted Apple response with a valid submission ID, and verify the online notarized requirement before packaging.
+- Re-verify the Foundation and notarized requirements on both extracted macOS release archives so packaging cannot silently lose artifact trust.
+
+### Configuration
+
+- Add `embed_base_url`, `GITCRAWL_EMBED_BASE_URL`, and `gitcrawl configure --embed-base-url` for embedding-only endpoint routing, with doctor output and documented fallback order. Thanks @larroy.
+
+### Dependencies and maintenance
+
 - Update CrawlKit to v0.14.3, Alpine to 3.24, `actions/setup-node` to v7, govulncheck to v1.6.0, and deadcode to v0.48.0.
 
 ## 0.8.0 - 2026-07-17
