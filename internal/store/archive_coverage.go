@@ -107,6 +107,15 @@ func (s *Store) ArchiveCoverage(ctx context.Context, opts ArchiveCoverageOptions
 			where gwr.repo_id = r.id
 		)`
 	}
+	hydrationFailuresSupported := s.archiveCoverageHasColumns(ctx, "sync_attempt_failures", "repo_id", "resolved_at")
+	knownFailedHydrationsExpression := "0"
+	if hydrationFailuresSupported {
+		knownFailedHydrationsExpression = `(
+			select count(*)
+			from sync_attempt_failures saf
+			where saf.repo_id = r.id and saf.resolved_at is null
+		)`
+	}
 	lastSyncExpression := s.archiveCoverageLastSyncExpression(ctx)
 	query := `
 		select
@@ -124,6 +133,7 @@ func (s *Store) ArchiveCoverage(ctx context.Context, opts ArchiveCoverageOptions
 		  ` + prChecksExpression + ` as pr_checks,
 		  ` + prReviewThreadsExpression + ` as pr_review_threads,
 		  ` + workflowRunsExpression + ` as workflow_runs,
+		  ` + knownFailedHydrationsExpression + ` as known_failed_hydrations,
 		  ` + lastSyncExpression + ` as last_sync_at
 		from repositories r
 		left join threads t on t.repo_id = r.id
@@ -147,10 +157,19 @@ func (s *Store) ArchiveCoverage(ctx context.Context, opts ArchiveCoverageOptions
 	}
 	defer rows.Close()
 
-	coverage := ArchiveCoverage{Rows: []ArchiveCoverageRow{}}
+	coverage := ArchiveCoverage{
+		Rows: []ArchiveCoverageRow{},
+		Totals: ArchiveCoverageRow{
+			HydrationFailuresSupported: hydrationFailuresSupported,
+		},
+	}
+	if hydrationFailuresSupported {
+		coverage.Totals.KnownFailedHydrations = new(int)
+	}
 	for rows.Next() {
 		var row ArchiveCoverageRow
 		var lastSync sql.NullString
+		var knownFailedHydrations int
 		if err := rows.Scan(
 			&row.RepoID,
 			&row.Repository,
@@ -166,12 +185,16 @@ func (s *Store) ArchiveCoverage(ctx context.Context, opts ArchiveCoverageOptions
 			&row.PRChecks,
 			&row.PRReviewThreads,
 			&row.WorkflowRuns,
+			&knownFailedHydrations,
 			&lastSync,
 		); err != nil {
 			return ArchiveCoverage{}, fmt.Errorf("scan archive coverage: %w", err)
 		}
 		row.LastSyncAt = lastSync.String
-		row.HydrationFailuresSupported = false
+		if hydrationFailuresSupported {
+			row.HydrationFailuresSupported = true
+			row.KnownFailedHydrations = &knownFailedHydrations
+		}
 		coverage.Rows = append(coverage.Rows, row)
 	}
 	if err := rows.Err(); err != nil {
@@ -188,7 +211,6 @@ func (s *Store) ArchiveCoverage(ctx context.Context, opts ArchiveCoverageOptions
 		addArchiveCoverageTotals(&coverage.Totals, coverage.Rows[index])
 	}
 	coverage.Totals.Repository = "total"
-	coverage.Totals.HydrationFailuresSupported = false
 	finalizeEnrichmentCoverage(&coverage.Totals.Enrichment)
 	return coverage, nil
 }
@@ -266,6 +288,13 @@ func addArchiveCoverageTotals(total *ArchiveCoverageRow, row ArchiveCoverageRow)
 	total.PRChecks += row.PRChecks
 	total.PRReviewThreads += row.PRReviewThreads
 	total.WorkflowRuns += row.WorkflowRuns
+	if row.HydrationFailuresSupported && row.KnownFailedHydrations != nil {
+		total.HydrationFailuresSupported = true
+		if total.KnownFailedHydrations == nil {
+			total.KnownFailedHydrations = new(int)
+		}
+		*total.KnownFailedHydrations += *row.KnownFailedHydrations
+	}
 	addEnrichmentCoverage(&total.Enrichment, row.Enrichment)
 }
 

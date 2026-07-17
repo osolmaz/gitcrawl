@@ -29,9 +29,10 @@ func TestCoverageCommandJSONAndTable(t *testing.T) {
 		t.Fatalf("coverage json: %v", err)
 	}
 	var payload struct {
-		RepositoryFilters []string                   `json:"repository_filters"`
-		Repositories      []store.ArchiveCoverageRow `json:"repositories"`
-		Totals            store.ArchiveCoverageRow   `json:"totals"`
+		RepositoryFilters          []string                   `json:"repository_filters"`
+		HydrationFailuresAvailable bool                       `json:"hydration_failures_available"`
+		Repositories               []store.ArchiveCoverageRow `json:"repositories"`
+		Totals                     store.ArchiveCoverageRow   `json:"totals"`
 	}
 	if err := json.Unmarshal(jsonOut.Bytes(), &payload); err != nil {
 		t.Fatalf("decode coverage json: %v\n%s", err, jsonOut.String())
@@ -46,8 +47,11 @@ func TestCoverageCommandJSONAndTable(t *testing.T) {
 	if row.Comments != 2 || row.PRReviews != 1 {
 		t.Fatalf("comment coverage = %+v", row)
 	}
-	if row.HydrationFailuresSupported || row.KnownFailedHydrations != nil {
+	if !row.HydrationFailuresSupported || row.KnownFailedHydrations == nil || *row.KnownFailedHydrations != 1 {
 		t.Fatalf("failure ledger fields = %+v", row)
+	}
+	if !payload.Totals.HydrationFailuresSupported || payload.Totals.KnownFailedHydrations == nil || *payload.Totals.KnownFailedHydrations != 1 {
+		t.Fatalf("failure ledger totals = %+v", payload.Totals)
 	}
 	if !row.Enrichment.Revisions.Supported ||
 		row.Enrichment.Revisions.Eligible != 4 ||
@@ -96,6 +100,9 @@ func TestCoverageCommandJSONAndTable(t *testing.T) {
 	}
 	if payload.Repositories == nil || len(payload.Repositories) != 0 {
 		t.Fatalf("empty repositories should encode as an array: %+v", payload.Repositories)
+	}
+	if !payload.HydrationFailuresAvailable || !payload.Totals.HydrationFailuresSupported || payload.Totals.KnownFailedHydrations == nil || *payload.Totals.KnownFailedHydrations != 0 {
+		t.Fatalf("empty filtered failure ledger totals = %+v available=%v", payload.Totals, payload.HydrationFailuresAvailable)
 	}
 
 	for _, args := range [][]string{
@@ -184,6 +191,7 @@ func TestCoverageCommandSupportsArchiveWithoutOptionalCoverageTables(t *testing.
 		"github_workflow_runs",
 		"sync_runs",
 		"repo_sync_state",
+		"sync_attempt_failures",
 	} {
 		if _, err := st.DB().ExecContext(ctx, `drop table `+table); err != nil {
 			st.Close()
@@ -296,6 +304,32 @@ func seedCoverageStore(t *testing.T, ctx context.Context, dbPath string) {
 		if _, err := st.UpsertComment(ctx, comment); err != nil {
 			t.Fatalf("comment: %v", err)
 		}
+	}
+	if _, err := st.RecordSyncAttemptFailure(ctx, store.SyncAttemptFailure{
+		RepoID:       gitcrawlID,
+		ThreadID:     detailedPRID,
+		Number:       4,
+		Operation:    "pull_request_details",
+		ErrorClass:   "api",
+		ErrorMessage: "api failure",
+		FirstSeenAt:  "2026-07-03T00:01:00Z",
+		LastSeenAt:   "2026-07-03T00:01:00Z",
+	}); err != nil {
+		t.Fatalf("record failure: %v", err)
+	}
+	if _, err := st.RecordSyncAttemptFailure(ctx, store.SyncAttemptFailure{
+		RepoID:       gitcrawlID,
+		Number:       2,
+		Operation:    "pull_request_details",
+		ErrorClass:   "temporary",
+		ErrorMessage: "temporary failure",
+		FirstSeenAt:  "2026-07-03T00:02:00Z",
+		LastSeenAt:   "2026-07-03T00:02:00Z",
+	}); err != nil {
+		t.Fatalf("record resolved failure: %v", err)
+	}
+	if _, err := st.ResolveSyncAttemptFailures(ctx, gitcrawlID, 2, "2026-07-03T00:03:00Z"); err != nil {
+		t.Fatalf("resolve failure: %v", err)
 	}
 }
 

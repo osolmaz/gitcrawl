@@ -183,6 +183,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.runSetClusterCanonical(ctx, rest[1:])
 	case "runs":
 		return a.runRuns(ctx, rest[1:])
+	case "sync-failures":
+		return a.runSyncFailures(ctx, rest[1:])
 	case "coverage":
 		return a.runCoverage(ctx, rest[1:])
 	case "search":
@@ -2309,6 +2311,53 @@ func (a *App) runRuns(ctx context.Context, args []string) error {
 	}, true)
 }
 
+func (a *App) runSyncFailures(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("sync-failures", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	includeResolved := fs.Bool("include-resolved", false, "include resolved failure rows")
+	limitRaw := fs.String("limit", "", "maximum failure rows")
+	jsonOut := fs.Bool("json", false, "write JSON output")
+	if err := fs.Parse(normalizeCommandArgs(args, map[string]bool{"limit": true})); err != nil {
+		return usageErr(err)
+	}
+	a.applyCommandJSON(*jsonOut)
+	if fs.NArg() != 1 {
+		return usageErr(fmt.Errorf("sync-failures requires owner/repo"))
+	}
+	owner, repoName, err := parseOwnerRepo(fs.Arg(0))
+	if err != nil {
+		return usageErr(err)
+	}
+	limit, err := parseOptionalPositiveInt(*limitRaw)
+	if err != nil {
+		return usageErr(err)
+	}
+
+	rt, err := a.openLocalRuntimeReadOnly(ctx)
+	if err != nil {
+		return err
+	}
+	defer rt.Store.Close()
+
+	repo, err := rt.repository(ctx, owner, repoName)
+	if err != nil {
+		return err
+	}
+	failures, err := rt.Store.ListSyncAttemptFailures(ctx, store.SyncAttemptFailureListOptions{
+		RepoID:          repo.ID,
+		IncludeResolved: *includeResolved,
+		Limit:           limit,
+	})
+	if err != nil {
+		return err
+	}
+	return a.writeOutput("sync-failures", map[string]any{
+		"repository":       repo.FullName,
+		"include_resolved": *includeResolved,
+		"failures":         failures,
+	}, true)
+}
+
 func (a *App) runCoverage(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("coverage", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -2374,7 +2423,7 @@ func (a *App) runCoverage(ctx context.Context, args []string) error {
 	payload := map[string]any{
 		"repository_filters":           resolvedFilters,
 		"min_missing_pr_details":       minMissing,
-		"hydration_failures_available": false,
+		"hydration_failures_available": coverage.Totals.HydrationFailuresSupported,
 		"repositories":                 coverage.Rows,
 		"totals":                       coverage.Totals,
 	}
@@ -3316,7 +3365,8 @@ func (a *App) runPortablePrune(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("portable prune", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	bodyCharsRaw := fs.String("body-chars", "256", "maximum thread body characters to keep")
-	noVacuum := fs.Bool("no-vacuum", false, "skip SQLite vacuum after pruning")
+	noVacuum := fs.Bool("no-vacuum", false, "skip size-reclaim vacuum unless needed to scrub failure history")
+	includeSyncFailures := fs.Bool("include-sync-failures", false, "include the sync failure ledger with redacted error messages")
 	jsonOut := fs.Bool("json", false, "write JSON output")
 	if err := fs.Parse(normalizeCommandArgs(args, map[string]bool{"body-chars": true})); err != nil {
 		return usageErr(err)
@@ -3338,8 +3388,9 @@ func (a *App) runPortablePrune(ctx context.Context, args []string) error {
 		return err
 	}
 	stats, err := rt.Store.PrunePortablePayloads(ctx, store.PortablePruneOptions{
-		BodyChars: bodyChars,
-		Vacuum:    !*noVacuum,
+		BodyChars:           bodyChars,
+		Vacuum:              !*noVacuum,
+		IncludeSyncFailures: *includeSyncFailures,
 	})
 	closeErr := rt.Store.Close()
 	if err != nil {
@@ -4982,6 +5033,7 @@ Core commands:
   init                 create config, optionally from a portable store
   doctor               check config, token, and database readiness
   sync                 sync GitHub issue and pull request metadata
+  sync-failures        list failed sync hydration attempts
   coverage             report local archive PR-detail completeness
   fill-pr-details      hydrate locally missing pull request detail rows
   refresh              run sync, enrichment, embedding, and clustering pipeline
@@ -5068,6 +5120,11 @@ Usage:
 
 Usage:
   gitcrawl sync owner/repo [--state open|closed|all] [--numbers refs] [--with pr-details] [--include-pr-details] [--json]
+`,
+	"sync-failures": `gitcrawl sync-failures lists failed sync hydration attempts.
+
+Usage:
+  gitcrawl sync-failures owner/repo [--include-resolved] [--limit N] [--json]
 `,
 	"coverage": `gitcrawl coverage reports local archive completeness by repository.
 
@@ -5214,8 +5271,12 @@ The TUI quietly refreshes from the local store every 15 seconds and leaves the c
 const portableUsageText = `gitcrawl portable manages local portable-store snapshots.
 
 Usage:
-  gitcrawl portable prune [--body-chars N] [--no-vacuum] [--json]
+  gitcrawl portable prune [--body-chars N] [--no-vacuum] [--include-sync-failures] [--json]
 
 Subcommands:
   prune               prune volatile payloads from the configured portable store
+
+The sync failure ledger is excluded by default. --include-sync-failures keeps
+the ledger but replaces every error message with a redaction marker. A present
+or pending ledger forces a secure database rewrite even with --no-vacuum.
 `

@@ -3598,13 +3598,109 @@ func TestSyncPullRequestDetailsFailsOnReviewThreadFetchError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "list pull request review threads for #8") {
 		t.Fatalf("sync error = %v", err)
 	}
-	if _, err := st.RepositoryByFullName(ctx, "openclaw/gitcrawl"); err == nil {
-		t.Fatal("repository persisted after failed PR detail hydration")
+	repo, err := st.RepositoryByFullName(ctx, "openclaw/gitcrawl")
+	if err != nil {
+		t.Fatalf("repository not persisted for failed PR detail hydration: %v", err)
 	}
-	assertTableRowCount(t, st, "repositories", 0)
-	assertTableRowCount(t, st, "threads", 0)
+	threads, err := st.ListThreads(ctx, repo.ID, true)
+	if err != nil {
+		t.Fatalf("threads: %v", err)
+	}
+	if len(threads) != 1 || threads[0].Number != 8 || threads[0].Kind != "pull_request" {
+		t.Fatalf("threads = %+v", threads)
+	}
+	failures, err := st.ListSyncAttemptFailures(ctx, store.SyncAttemptFailureListOptions{RepoID: repo.ID})
+	if err != nil {
+		t.Fatalf("sync attempt failures: %v", err)
+	}
+	if len(failures) != 1 {
+		t.Fatalf("failure count = %d, want 1", len(failures))
+	}
+	if failures[0].Number != 8 || failures[0].Operation != "pull_review_threads" || !strings.Contains(failures[0].ErrorMessage, "graphql unavailable") || failures[0].ResolvedAt != "" {
+		t.Fatalf("failure = %+v", failures[0])
+	}
 	assertTableRowCount(t, st, "pull_request_review_thread_syncs", 0)
 	assertTableRowCount(t, st, "sync_runs", 0)
+
+	s = New(pullDetailsGitHub{}, st)
+	s.now = func() time.Time { return time.Date(2026, 4, 26, 0, 1, 0, 0, time.UTC) }
+	if _, err := s.Sync(ctx, Options{Owner: "openclaw", Repo: "gitcrawl", Numbers: []int{8}, IncludePRDetails: true}); err != nil {
+		t.Fatalf("sync retry: %v", err)
+	}
+	history, err := st.ListSyncAttemptFailures(ctx, store.SyncAttemptFailureListOptions{RepoID: repo.ID, IncludeResolved: true})
+	if err != nil {
+		t.Fatalf("sync attempt failure history: %v", err)
+	}
+	if len(history) != 1 || history[0].ResolvedAt == "" {
+		t.Fatalf("history = %+v", history)
+	}
+}
+
+func TestSyncAttemptErrorClass(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "context canceled",
+			err:  context.Canceled,
+			want: "context_canceled",
+		},
+		{
+			name: "deadline exceeded",
+			err:  context.DeadlineExceeded,
+			want: "deadline_exceeded",
+		},
+		{
+			name: "generic error",
+			err:  errors.New("graphql unavailable"),
+			want: "error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := syncAttemptErrorClass(tt.err); got != tt.want {
+				t.Fatalf("syncAttemptErrorClass() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRecordPullRequestSyncFailureOutlivesCanceledFetchContext(t *testing.T) {
+	background := context.Background()
+	st, err := store.Open(background, filepath.Join(t.TempDir(), "gitcrawl.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	s := New(fakeGitHub{}, st)
+	s.now = func() time.Time { return time.Date(2026, 7, 16, 0, 0, 0, 0, time.UTC) }
+	repoRaw, err := (fakeGitHub{}).GetRepo(background, "openclaw", "gitcrawl", nil)
+	if err != nil {
+		t.Fatalf("fixture repository: %v", err)
+	}
+	row, err := (fakeGitHub{}).GetIssue(background, "openclaw", "gitcrawl", 8, nil)
+	if err != nil {
+		t.Fatalf("fixture pull request: %v", err)
+	}
+	canceled, cancel := context.WithCancel(background)
+	cancel()
+	if err := s.recordPullRequestSyncFailure(canceled, Options{Owner: "openclaw", Repo: "gitcrawl"}, repoRaw, row, "pull_request_details", context.Canceled); err != nil {
+		t.Fatalf("record canceled sync failure: %v", err)
+	}
+	repo, err := st.RepositoryByFullName(background, "openclaw/gitcrawl")
+	if err != nil {
+		t.Fatalf("read repository: %v", err)
+	}
+	failures, err := st.ListSyncAttemptFailures(background, store.SyncAttemptFailureListOptions{RepoID: repo.ID})
+	if err != nil {
+		t.Fatalf("list sync failures: %v", err)
+	}
+	if len(failures) != 1 || failures[0].ErrorClass != "context_canceled" || failures[0].Operation != "pull_request_details" {
+		t.Fatalf("canceled sync failures = %+v", failures)
+	}
 }
 
 func TestSyncPullRequestDetailsSkipsCheckAndWorkflowFetchWithoutHeadSHA(t *testing.T) {

@@ -28,6 +28,12 @@ func TestArchiveCoverageReportsAndFiltersCurrentStore(t *testing.T) {
 	if primary.Repository != "openclaw/gitcrawl" || primary.Comments != 2 || primary.PRReviews != 1 || primary.PullRequestsWithDetails != 1 || primary.PRFiles != 1 || primary.PRCommits != 1 || primary.PRChecks != 1 || primary.PRReviewThreads != 1 || primary.WorkflowRuns != 1 || primary.LastSyncAt == "" {
 		t.Fatalf("primary coverage = %+v", primary)
 	}
+	if !primary.HydrationFailuresSupported || primary.KnownFailedHydrations == nil || *primary.KnownFailedHydrations != 1 {
+		t.Fatalf("primary hydration failures = %+v", primary)
+	}
+	if !coverage.Totals.HydrationFailuresSupported || coverage.Totals.KnownFailedHydrations == nil || *coverage.Totals.KnownFailedHydrations != 1 {
+		t.Fatalf("total hydration failures = %+v", coverage.Totals)
+	}
 	if !primary.Enrichment.Revisions.Supported ||
 		primary.Enrichment.Revisions.Eligible != 4 ||
 		primary.Enrichment.Revisions.Fresh != 1 ||
@@ -649,6 +655,7 @@ func TestArchiveCoverageSupportsPortableAndOptionalTableDrift(t *testing.T) {
 			"github_workflow_runs",
 			"sync_runs",
 			"repo_sync_state",
+			"sync_attempt_failures",
 			"thread_fingerprints",
 			"thread_key_summaries",
 			"thread_revisions",
@@ -782,6 +789,32 @@ func seedArchiveCoverageRows(t *testing.T, ctx context.Context, st *Store) (int6
 	}
 	if _, err := st.DB().ExecContext(ctx, `insert into sync_runs(repo_id, scope, status, started_at, finished_at) values(?, 'open', 'success', '2026-07-06T00:00:00Z', '2026-07-06T00:02:00Z')`, primaryID); err != nil {
 		t.Fatalf("sync run: %v", err)
+	}
+	if _, err := st.RecordSyncAttemptFailure(ctx, SyncAttemptFailure{
+		RepoID:       primaryID,
+		ThreadID:     detailedPRID,
+		Number:       3,
+		Operation:    "pull_request_details",
+		ErrorClass:   "rate_limit",
+		ErrorMessage: "rate limited",
+		FirstSeenAt:  "2026-07-06T00:03:00Z",
+		LastSeenAt:   "2026-07-06T00:03:00Z",
+	}); err != nil {
+		t.Fatalf("record unresolved failure: %v", err)
+	}
+	if _, err := st.RecordSyncAttemptFailure(ctx, SyncAttemptFailure{
+		RepoID:       primaryID,
+		Number:       4,
+		Operation:    "pull_request_details",
+		ErrorClass:   "temporary",
+		ErrorMessage: "temporary failure",
+		FirstSeenAt:  "2026-07-06T00:04:00Z",
+		LastSeenAt:   "2026-07-06T00:04:00Z",
+	}); err != nil {
+		t.Fatalf("record resolved failure: %v", err)
+	}
+	if _, err := st.ResolveSyncAttemptFailures(ctx, primaryID, 4, "2026-07-06T00:05:00Z"); err != nil {
+		t.Fatalf("resolve failure: %v", err)
 	}
 	return primaryID, secondaryID
 }
