@@ -1,16 +1,42 @@
 # Changelog
 
-## 0.7.2 - Unreleased
+## 0.8.0 - 2026-07-17
 
-- Add durable sync and hydration failure tracking while excluding the ledger from portable exports by default and redacting error text when explicitly included. Thanks @TurboTheTurtle.
+### Highlights
+
+- Publish cloud archives as content-addressed snapshots through isolated staging, resumable upload, and an explicitly verified reader cutover instead of mutating serving state in place.
+- Make revision enrichment and PR/workflow hydration monotonic and evidence-bound so stale, partial, or reordered observations cannot replace newer accepted archive state.
 - Add fleet-aware bounded PR-detail hydration with a configurable shared-token GitHub rate-limit floor. Thanks @TurboTheTurtle.
-- Ignore cross-repository issue and pull request links when building deterministic cluster edges for the current repository, so an upstream link such as `https://github.com/other/repo/pull/169` no longer clusters the unrelated local thread numbered 169, while unqualified `issues/123` and `pull/123` references still resolve locally.
+- Add a durable sync failure ledger while excluding it from portable exports by default and redacting error text when explicitly included. Thanks @TurboTheTurtle.
+
+### Cloud publishing
+
+- Stage content-addressed snapshot bundles under isolated identities, stream large SQLite archives in chunks, resume incomplete uploads across processes, tolerate concurrent publishers, and preserve the current reader until explicit cutover.
+- Require compatible reader queries, export schemas, complete enrichment and PR-file coverage, readable chunk hydration, scoped credentials, and snapshot-capable manifests before any remote mutation; operators can explicitly accept incomplete enrichment with `--allow-incomplete`.
+- Bind staging, resume, publication acknowledgements, bundle digests, status, and post-cutover verification to the publisher's exact snapshot ID so a newer concurrent candidate cannot be mistaken for owned work.
+- Update CrawlKit to v0.14.2 for the reviewed snapshot publication APIs.
+
+### Archive and enrichment integrity
+
+- Materialize canonical thread revisions and bind key summaries, embeddings, coverage, and clusters to the latest fully hydrated evidence while rejecting stale, divergent, incomplete, or obsolete projections.
+- Track source, fetch, parent, and child evidence clocks with durable observation generations; atomically reserve hydration families and preserve accepted evidence across tied timestamps, delayed arrivals, portable archives, and migrations.
+- Fence workflow snapshots by pull-request head and accepted evidence generation, commit sibling runs atomically, preserve verified deletions, and reject regressed or resurrected workflow state.
+- Make schema convergence and recovery atomic while preserving legacy freshness floors, observation tuples, portable truncation metadata, incomplete hydration state, and the highest migrated workflow fences.
+- Reuse legacy `llm_key_3line` summaries as canonical key-summary evidence, then remove only byte-identical legacy copies from portable exports so archives stay below GitHub's blob limit without regenerating equivalent work or discarding distinct evidence.
+- Honor issue draft transitions, hydrate overlap closures, and preserve partial cluster memberships when limited or incomplete inputs cannot justify a full replacement.
+
+### Maintainer workflows
+
+- Add `gitcrawl fill-pr-details` for bounded, resumable hydration of missing PR details, probing the shared token's live `/rate_limit` quota before each guarded request and preserving a configurable reserve. Thanks @TurboTheTurtle.
+- Add `gitcrawl sync-failures` and durable retry/resolution tracking; portable exports drop the ledger by default, redact opted-in errors, and securely rewrite current, deleted, and interrupted failure history. Thanks @TurboTheTurtle.
+- Ignore cross-repository issue and pull request URLs when building deterministic local cluster edges while preserving documented unqualified `issues/123` and `pull/123` references. Thanks @GongYuanCaiJi.
 - Ignore stray ancestor `.git` directories when resolving local databases while preserving verified legacy portable-store worktrees and fail-closed probe errors. Thanks @morluto.
-- Remove byte-identical legacy key-summary copies from portable exports after canonicalization, keeping archive snapshots below GitHub's blob limit without dropping distinct legacy evidence.
-- Reuse legacy `llm_key_3line` summaries as canonical key-summary evidence during schema migration so existing archives can embed, cluster, and publish without regenerating every summary first.
-- Require every Gitcrawl cloud publisher manifest to opt into snapshot staging so `--stage-only` and normal publish-then-cutover runs cannot activate serving state through the legacy compatibility path.
-- Update CrawlKit to v0.14.2 and bind publisher resume plus post-cutover verification to the exact snapshot ID, so a newer concurrently staged candidate cannot be mistaken for the snapshot this publisher owns.
-- Fail cloud publication before any remote mutation when local enrichment coverage is incomplete unless operators explicitly pass `--allow-incomplete`.
+
+### Release and dependency maintenance
+
+- Verify draft release inventories through exact release and asset API identities while keeping validation operations read-only.
+- Update `golang.org/x/sys` to v0.47.0, `modernc.org/sqlite` to v1.54.0, `github.com/mattn/go-isatty` to v0.0.23, and `github.com/alecthomas/kong` to v1.16.0, and replace the unreleased Lip Gloss pseudo-version with stable v1.1.0.
+- Update `actions/setup-go` to v7 and TruffleHog to v3.95.9.
 
 ## 0.7.1 - 2026-07-09
 
