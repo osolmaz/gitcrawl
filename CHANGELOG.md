@@ -1,6 +1,16 @@
 # Changelog
 
-## 0.8.2 - Unreleased
+## 0.8.2 - 2026-07-18
+
+### Highlights
+
+- Refresh the Go dependency closure to current releases for Unicode text handling, the modernc runtime, diff and golden-test helpers, profiling, and Go tooling.
+
+### Dependencies and maintenance
+
+- Update `golang.org/x/text` to v0.40.0, `modernc.org/libc` to v1.74.2, and `modernc.org/gc/v3` to v3.1.5.
+- Update `github.com/alecthomas/repr` to v0.5.4, `github.com/aymanbagabas/go-udiff` to v0.4.1, `github.com/stretchr/objx` to v0.5.3, and the current `x/exp`, `x/tools`, golden-test, and pprof revisions.
+- Keep CrawlKit on its latest v0.14.3 release and confirm every direct Go dependency, pinned build tool, and GitHub Action is current.
 
 ## 0.8.1 - 2026-07-17
 
