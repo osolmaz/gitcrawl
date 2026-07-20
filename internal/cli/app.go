@@ -3180,9 +3180,21 @@ func (a *App) syncRepository(ctx context.Context, owner, repo string, options sy
 	if err != nil {
 		return syncer.Stats{}, err
 	}
-	token := a.resolveGitHubToken(ctx, cfg)
-	if token.Value == "" {
-		return syncer.Stats{}, fmt.Errorf("missing GitHub token: set %s or authenticate gh", cfg.GitHub.TokenEnv)
+	transport := strings.TrimSpace(strings.ToLower(os.Getenv("GITCRAWL_GITHUB_TRANSPORT")))
+	var client syncer.GitHubClient
+	if transport == "brokerkit" {
+		client = gh.NewBrokerKit(gh.BrokerKitOptions{Command: os.Getenv("GITCRAWL_GH_BROKER_PATH")})
+	} else {
+		token := a.resolveGitHubToken(ctx, cfg)
+		if token.Value == "" {
+			return syncer.Stats{}, fmt.Errorf("missing GitHub token: set %s or authenticate gh", cfg.GitHub.TokenEnv)
+		}
+		client = gh.New(gh.Options{
+			Token:            token.Value,
+			BaseURL:          githubBaseURL(),
+			RateLimit:        a.observeGitHubRateLimit(ctx, token.Value),
+			RateLimitReserve: options.RateLimitReserve,
+		})
 	}
 	if err := config.EnsureRuntimeDirs(cfg); err != nil {
 		return syncer.Stats{}, err
@@ -3201,13 +3213,6 @@ func (a *App) syncRepository(ctx context.Context, owner, repo string, options sy
 		}
 		logger = progressLogger(a.Stderr)
 	}
-	baseURL := githubBaseURL()
-	client := gh.New(gh.Options{
-		Token:            token.Value,
-		BaseURL:          baseURL,
-		RateLimit:        a.observeGitHubRateLimit(ctx, token.Value),
-		RateLimitReserve: options.RateLimitReserve,
-	})
 	service := syncer.New(client, rt.Store)
 	stats, err := service.Sync(ctx, syncer.Options{
 		Owner:            owner,
